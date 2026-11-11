@@ -1,0 +1,10 @@
+bin/
+obj/
+dist/
+output/
+data/
+.vs/
+portable.flag
+*.user
+*.exe
+*.zip

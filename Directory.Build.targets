@@ -1,0 +1,17 @@
+<!--
+Traceability metadata
+Version: 0.2.0
+Generated: 2026-07-25 (Asia/Shanghai)
+Last updated: 2026-10-02
+Content coverage through: 2026-10-02
+Source type: LOCAL-WORK
+Source: Codex Desktop / workspace new-chat / current Lumi independent companion task / Codex
+-->
+<Project>
+  <ItemGroup>
+    <Compile Remove="src\UI\SettingsWindow.cs" />
+    <!-- Repair and acceptance folders may contain full historical project copies. -->
+    <Compile Remove="repair\**\*.cs" />
+    <Compile Remove="panel\**\*.cs" />
+  </ItemGroup>
+</Project>
