@@ -1,5 +1,5 @@
-// Version: 0.3.14-preview | Generated: 2026-11-10 | Updated/coverage: 2026-11-11 (Asia/Shanghai)
-// Source: RAW | user dock/drag/return, automatic placement, two progress modes, links and perimeter progress; LOCAL-WORK | Codex Desktop / Lumi / Codex
+// Version: 0.3.15-preview | Generated: 2026-11-10 | Updated/coverage: 2026-11-13 (Asia/Shanghai)
+// Source: RAW | user ComfyUI panel and estimated time requests; LOCAL-WORK | Codex Desktop / Lumi / Codex
 using System.ComponentModel;
 using System.Diagnostics;
 using System.Runtime.InteropServices;
@@ -28,6 +28,14 @@ public sealed class ComfyUiStatusWindow : Window
     private readonly Controls.TextBlock _queue = new() { FontSize = 14, Text = "正在读取 ComfyUI…" };
     private readonly Controls.TextBlock _history = new() { FontSize = 12 };
     private readonly Controls.TextBlock _progress = new() { FontSize = 12, TextWrapping = TextWrapping.Wrap };
+    private readonly Controls.TextBlock _eta = new()
+    {
+        FontSize = 11,
+        Foreground = UsageControlStyle.Muted,
+        Margin = new Thickness(0, 3, 0, 0),
+        Visibility = Visibility.Collapsed,
+        ToolTip = "按近期成功任务的实际耗时估算，从 Lumi 观察到当前任务运行时开始计时。"
+    };
     private readonly Controls.TextBlock _status = new()
     {
         FontSize = 10, Foreground = UsageControlStyle.Muted, TextWrapping = TextWrapping.Wrap
@@ -86,6 +94,7 @@ public sealed class ComfyUiStatusWindow : Window
         _queue.Margin = new Thickness(0, 8, 0, 4);
         panel.Children.Add(_queue);
         panel.Children.Add(_progress);
+        panel.Children.Add(_eta);
         _history.Margin = new Thickness(0, 7, 0, 4);
         panel.Children.Add(_history);
         panel.Children.Add(_status);
@@ -365,6 +374,12 @@ public sealed class ComfyUiStatusWindow : Window
         }
 
         _progress.Visibility = _placement.ShowNodeSteps ? Visibility.Visible : Visibility.Collapsed;
+        _eta.Visibility = _placement.ShowNodeSteps && _snapshot?.Running == 1
+            ? Visibility.Visible : Visibility.Collapsed;
+        if (_eta.Visibility == Visibility.Visible)
+            _eta.Text = _snapshot?.RunningEta is { } estimate
+                ? "本任务预计剩余 " + FormatEta(estimate)
+                : "本任务预计剩余 暂无估计";
         if (!_placement.ShowNodeSteps || _snapshot?.Running is not > 0)
         {
             _perimeterProgress.Fraction = 0;
@@ -386,6 +401,23 @@ public sealed class ComfyUiStatusWindow : Window
         _perimeterProgress.Fraction = 0;
         _progress.Text = node?.Node is { Length: > 0 } nodeId ? $"节点 {nodeId} 执行中"
             : _monitor is null ? "执行中 · 真实步数桥未接入" : "执行中 · 当前节点尚未报告步数";
+    }
+
+    private static string FormatEta(ComfyUiEtaEstimate estimate)
+    {
+        if (estimate.Upper <= TimeSpan.Zero) return "已超出近期耗时";
+        long lower = (long)Math.Ceiling(estimate.Lower.TotalSeconds);
+        long upper = (long)Math.Ceiling(estimate.Upper.TotalSeconds);
+        if (lower == upper) return $"约 {Duration(upper)}";
+        if (upper < 60) return $"约 {lower}–{upper} 秒";
+        return $"约 {Duration(lower)}–{Duration(upper)}";
+
+        static string Duration(long seconds)
+        {
+            if (seconds >= 3600) return $"{seconds / 3600} 小时 {seconds / 60 % 60} 分";
+            if (seconds >= 60) return $"{seconds / 60} 分 {seconds % 60} 秒";
+            return $"{seconds} 秒";
+        }
     }
 
     private async Task OpenOutputAsync()

@@ -1,15 +1,16 @@
 /*
 Traceability metadata
-Version: 0.3.9-preview
+Version: 0.3.15-preview
 Generated: 2026-11-10 (Asia/Shanghai)
-Last updated: 2026-11-10
-Content coverage through: 2026-11-10
-Source type: RAW | user request for local ComfyUI status; LOCAL-WORK | read-only HTTP implementation
+Last updated: 2026-11-13
+Content coverage through: 2026-11-13
+Source type: RAW | user request for local ComfyUI status and ETA; LOCAL-WORK | read-only HTTP implementation
 Source: Codex Desktop / lumi-companion / independent Lumi companion chat / Codex
 Organizing node: Windows / Codex Desktop / ComfyUI HTTP status subtask
 Original sources: user requirements and ComfyUI's documented server routes and execution history.
 https://docs.comfy.org/development/comfyui-server/comms_routes
 https://github.com/Comfy-Org/ComfyUI/blob/master/execution.py
+https://github.com/Comfy-Org/ComfyUI_frontend/blob/v1.53.10/src/components/queue/job/useQueueEstimates.ts
 */
 
 using System.Net.Http;
@@ -21,13 +22,20 @@ namespace LumiCompanion.Infrastructure;
 public sealed class ComfyUiStatusService : IDisposable
 {
     public const int HistoryLimit = 100;
+    private const int EtaHistoryLimit = 20;
 
     private static readonly Uri ServerAddress = new("http://127.0.0.1:8188/");
     private static readonly TimeSpan ReadTimeout = TimeSpan.FromSeconds(3);
     private readonly HttpClient _client;
+    private readonly TimeProvider _timeProvider;
+    private readonly object _queueGate = new();
+    private readonly Dictionary<string, long> _runningSince = new(StringComparer.Ordinal);
+    private long _queueReadSequence;
+    private long _lastObservedQueueRead;
 
-    public ComfyUiStatusService(HttpMessageHandler? handler = null)
+    public ComfyUiStatusService(HttpMessageHandler? handler = null, TimeProvider? timeProvider = null)
     {
+        _timeProvider = timeProvider ?? TimeProvider.System;
         _client = new HttpClient(handler ?? new HttpClientHandler
         {
             UseProxy = false,
@@ -48,18 +56,61 @@ public sealed class ComfyUiStatusService : IDisposable
         using var deadline = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
         deadline.CancelAfter(ReadTimeout);
 
-        var queueTask = ReadEndpointAsync("queue", ParseQueue, deadline.Token, cancellationToken);
+        var queueTask = ReadQueueAsync(deadline.Token, cancellationToken);
         var historyTask = ReadEndpointAsync($"history?max_items={HistoryLimit}", ParseHistory,
             deadline.Token, cancellationToken);
         await Task.WhenAll(queueTask, historyTask).ConfigureAwait(false);
 
-        var queue = await queueTask.ConfigureAwait(false);
+        var (queue, runningSince) = await queueTask.ConfigureAwait(false);
         var history = await historyTask.ConfigureAwait(false);
         cancellationToken.ThrowIfCancellationRequested();
 
         return new ComfyUiStatusSnapshot(
-            DateTimeOffset.Now, queue?.Pending, queue?.Running, queue?.RunningPromptIds ?? [],
-            history?.Succeeded, history?.Failed, history?.SavedOutputs, DescribeStatus(queue, history));
+            _timeProvider.GetLocalNow(), queue?.Pending, queue?.Running, queue?.RunningPromptIds ?? [],
+            history?.Succeeded, history?.Failed, history?.SavedOutputs, DescribeStatus(queue, history))
+        {
+            RunningEta = EstimateRemaining(runningSince, history?.Durations)
+        };
+    }
+
+    private async Task<(QueueRead? Queue, long? RunningSince)> ReadQueueAsync(
+        CancellationToken deadlineToken, CancellationToken callerToken)
+    {
+        long sequence = Interlocked.Increment(ref _queueReadSequence);
+        var queue = await ReadEndpointAsync("queue", ParseQueue, deadlineToken, callerToken).ConfigureAwait(false);
+        callerToken.ThrowIfCancellationRequested();
+        if (queue is null) return (null, null);
+
+        lock (_queueGate)
+        {
+            if (sequence <= _lastObservedQueueRead) return (queue, null);
+            _lastObservedQueueRead = sequence;
+            var active = queue.RunningPromptIds.ToHashSet(StringComparer.Ordinal);
+            foreach (string id in _runningSince.Keys.Where(id => !active.Contains(id)).ToArray())
+                _runningSince.Remove(id);
+            long observedAt = _timeProvider.GetTimestamp();
+            foreach (string id in active)
+                _runningSince.TryAdd(id, observedAt);
+
+            return (queue, queue.Running == 1 && queue.RunningPromptIds.Count == 1
+                ? _runningSince[queue.RunningPromptIds[0]]
+                : null);
+        }
+    }
+
+    private ComfyUiEtaEstimate? EstimateRemaining(long? runningSince, IReadOnlyList<ExecutionDuration>? durations)
+    {
+        if (runningSince is null || durations is not { Count: > 0 }) return null;
+
+        // ComfyUI estimates a job's remaining time from recent execution durations.
+        var sorted = durations.OrderByDescending(duration => duration.EndedAt)
+            .Take(EtaHistoryLimit).Select(duration => duration.Seconds).Order().ToArray();
+        double mean = sorted.Average();
+        double percentile75 = sorted[sorted.Length * 3 / 4];
+        double elapsed = Math.Max(0, _timeProvider.GetElapsedTime(runningSince.Value).TotalSeconds);
+        return new(
+            TimeSpan.FromSeconds(Math.Max(0, Math.Min(mean, percentile75) - elapsed)),
+            TimeSpan.FromSeconds(Math.Max(0, Math.Max(mean, percentile75) - elapsed)));
     }
 
     public void Dispose() => _client.Dispose();
@@ -146,6 +197,7 @@ public sealed class ComfyUiStatusService : IDisposable
         int succeeded = 0;
         int failed = 0;
         var savedOutputs = new HashSet<(string Subfolder, string Filename)>();
+        var durations = new List<ExecutionDuration>();
 
         foreach (var entry in root.EnumerateObject())
         {
@@ -161,13 +213,44 @@ public sealed class ComfyUiStatusService : IDisposable
                     break;
                 case ExecutionOutcome.Succeeded:
                     succeeded++;
+                    if (ReadExecutionDuration(task, cancellationToken) is { } duration)
+                        durations.Add(duration);
                     if (task.TryGetProperty("outputs", out var outputs))
                         CollectSavedOutputs(outputs, savedOutputs, cancellationToken);
                     break;
             }
         }
 
-        return new HistoryRead(succeeded, failed, savedOutputs.Count);
+        return new HistoryRead(succeeded, failed, savedOutputs.Count, durations);
+    }
+
+    private static ExecutionDuration? ReadExecutionDuration(JsonElement task, CancellationToken cancellationToken)
+    {
+        if (!task.TryGetProperty("status", out var status) || status.ValueKind != JsonValueKind.Object ||
+            !status.TryGetProperty("messages", out var messages) || messages.ValueKind != JsonValueKind.Array)
+            return null;
+
+        long startedAt = 0;
+        foreach (var message in messages.EnumerateArray())
+        {
+            cancellationToken.ThrowIfCancellationRequested();
+            if (message.ValueKind != JsonValueKind.Array || message.GetArrayLength() < 2 ||
+                message[0].ValueKind != JsonValueKind.String || message[1].ValueKind != JsonValueKind.Object ||
+                !message[1].TryGetProperty("timestamp", out var timestamp) || timestamp.ValueKind != JsonValueKind.Number ||
+                !timestamp.TryGetInt64(out long at) || at <= 0 || at > DateTimeOffset.MaxValue.ToUnixTimeMilliseconds())
+                continue;
+
+            switch (message[0].GetString())
+            {
+                case "execution_start":
+                    startedAt = at;
+                    break;
+                case "execution_success" when startedAt > 0 && at > startedAt:
+                    return new(at, (at - startedAt) / 1000.0);
+            }
+        }
+
+        return null;
     }
 
     private static ExecutionOutcome ReadOutcome(JsonElement task)
@@ -255,7 +338,9 @@ public sealed class ComfyUiStatusService : IDisposable
     }
 
     private sealed record QueueRead(int Pending, int Running, IReadOnlyList<string> RunningPromptIds);
-    private sealed record HistoryRead(int Succeeded, int Failed, int SavedOutputs);
+    private sealed record HistoryRead(int Succeeded, int Failed, int SavedOutputs,
+        IReadOnlyList<ExecutionDuration> Durations);
+    private readonly record struct ExecutionDuration(long EndedAt, double Seconds);
 }
 
 public sealed record ComfyUiMonitorRead(string? OutputDirectory, ComfyUiNodeProgress? Progress);

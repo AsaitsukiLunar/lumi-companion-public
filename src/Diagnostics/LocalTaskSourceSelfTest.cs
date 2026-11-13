@@ -1,7 +1,7 @@
 /*
 Version: 0.3.8-preview
 Generated: 2026-10-30 (Asia/Shanghai)
-Last updated / Content coverage through: 2026-11-10 (Asia/Shanghai)
+Last updated / Content coverage through: 2026-11-13 (Asia/Shanghai)
 Source type: LOCAL-WORK | Codex local task-source regression checks
 Organizing node: Windows / Codex Desktop / Codex / github_reuse subtask
 Original source: synthetic fixtures matching observed event schemas, never real conversation text or credentials.
@@ -118,6 +118,33 @@ public static class LocalTaskSourceSelfTest
             Event(child, "task_started", "child-turn");
             Check(Read().MatchedFiles == 1 && Read().Observations.Count == 1,
                 "other-account, CLI and subagent sources are excluded");
+
+            var ownerState = new Dictionary<string, object>
+            {
+                ["electron-renderer-content-owner"] = "active-owner",
+                ["electron-owner-atoms:active-owner"] = new Dictionary<string, object>
+                {
+                    ["local-document-identity"] = new { accountId = "test-account", accountUserId = "test-user__test-account" }
+                },
+                ["electron-owner-atoms:inactive-owner"] = new Dictionary<string, object>
+                {
+                    ["local-document-identity"] = new { accountId = "different-account", accountUserId = "test-user__different-account" }
+                },
+                ["electron-persisted-atom-state"] = new Dictionary<string, object>
+                {
+                    ["local-document-identity"] = new { accountId = "different-account", accountUserId = "test-user__different-account" }
+                }
+            };
+            File.WriteAllText(Path.Combine(temporary, ".codex-global-state.json"), JsonSerializer.Serialize(ownerState));
+            Event(main, "task_started", "owner-scoped");
+            var ownerScoped = Read();
+            Check(ownerScoped.SourceAvailable && ownerScoped.AccountScopeKey == started.AccountScopeKey &&
+                  ownerScoped.MatchedFiles == 1 && ownerScoped.Observations.Count == 1 &&
+                  ownerScoped.Observations[0].Snapshot.TaskId == "main-chat" &&
+                  ownerScoped.Observations[0].Snapshot.State == AgentTaskState.Running &&
+                  ownerScoped.Observations[0].TurnId == "owner-scoped",
+                "the renderer-selected owner restores active desktop task observations under the original scope key");
+            Identity();
 
             string bodyOnly = Session("message-only");
             Event(bodyOnly, "agent_message", "message-turn");

@@ -10,9 +10,9 @@ official protocol field semantics https://learn.chatgpt.com/docs/app-server (not
 */
 
 using System.Globalization;
-using System.Security.Cryptography;
 using System.Text;
 using System.Text.Json;
+using LumiCompanion.Integration;
 using LumiCompanion.Models;
 
 namespace LumiCompanion.Infrastructure;
@@ -47,17 +47,11 @@ public sealed class CodexUsageService
     {
         cancellationToken.ThrowIfCancellationRequested();
         DateTimeOffset now = _timeProvider.GetUtcNow();
-        using JsonDocument identityDocument = ReadJsonFile(Path.Combine(_codexRoot, ".codex-global-state.json"));
-        if (identityDocument.RootElement.ValueKind != JsonValueKind.Object ||
-            !identityDocument.RootElement.TryGetProperty("electron-persisted-atom-state", out var atom) ||
-            atom.ValueKind != JsonValueKind.Object ||
-            !atom.TryGetProperty("local-document-identity", out var identity) ||
-            !TryString(identity, "accountId", out string accountId) ||
-            !TryString(identity, "accountUserId", out string accountUserId))
+        if (LocalCodexAccountScope.Resolve(_codexRoot) is not { } scope)
             return CodexUsageSnapshot.Unavailable("尚未找到桌面 Codex 的账号标识；无法关联额度快照。");
 
         // Keep raw account/user identifiers out of exported snapshots and UI.
-        string scopeKey = Convert.ToHexString(SHA256.HashData(Encoding.UTF8.GetBytes(accountUserId)));
+        string scopeKey = scope.ScopeKey;
         CodexUsageSnapshot? latest = null;
         // A resumed chat keeps its original date directory. Select by file modification metadata
         // across session folders, then read at most 32 bounded tails; never parse all chat histories.
@@ -85,9 +79,9 @@ public sealed class CodexUsageService
                     using var metadata = JsonDocument.Parse(firstLine);
                     if (!TryString(metadata.RootElement, "type", out var type) || type != "session_meta" ||
                         !metadata.RootElement.TryGetProperty("payload", out var payload) ||
-                        !TryString(payload, "creator_account_id", out var creatorAccount) || creatorAccount != accountId ||
+                        !TryString(payload, "creator_account_id", out var creatorAccount) || creatorAccount != scope.AccountId ||
                         !TryString(payload, "creator_user_id", out var creatorUser) ||
-                        accountUserId != creatorUser + "__" + creatorAccount) continue;
+                        scope.AccountUserId != creatorUser + "__" + creatorAccount) continue;
                 }
 
                 long offset = Math.Max(0, stream.Length - TailBytes);
@@ -137,13 +131,6 @@ public sealed class CodexUsageService
             AccountScopeKey = scopeKey,
             SourceLabel = "本地 Codex 限额快照"
         };
-    }
-
-    private static JsonDocument ReadJsonFile(string path)
-    {
-        using var stream = new FileStream(path, FileMode.Open, FileAccess.Read, FileShare.ReadWrite | FileShare.Delete);
-        if (stream.Length > 8 * 1024 * 1024) throw new IOException("Identity state is too large.");
-        return JsonDocument.Parse(stream);
     }
 
     public static CodexUsageSnapshot ParseSnapshot(JsonElement response)

@@ -65,6 +65,9 @@ public static class Program
                 historyLimit = ComfyUiStatusService.HistoryLimit,
                 progressBridgeAvailable = monitor is not null,
                 nodeProgress = progress,
+                runningEtaSeconds = snapshot.RunningEta is { } eta
+                    ? new { lower = eta.Lower.TotalSeconds, upper = eta.Upper.TotalSeconds }
+                    : null,
                 snapshot.CapturedAt, snapshot.Pending, snapshot.Running,
                 snapshot.Succeeded, snapshot.Failed, snapshot.SavedOutputs, snapshot.Status
             }, new JsonSerializerOptions { WriteIndented = true }));
@@ -79,6 +82,7 @@ public static class Program
             LocalWorkBuddyTaskSourceSelfTest.Run();
             TaskCoordinatorSelfTest.Run();
             BodyHoverSelfTest.Run();
+            ComfyUiEtaSelfTest.Run();
             return 0;
         }
 
@@ -95,6 +99,23 @@ public static class Program
                 snapshot.IsStale, snapshot.HasAnyQuota, snapshot.StatusMessage, snapshot.TodayStatus
             }, new JsonSerializerOptions { WriteIndented = true }));
             return snapshot.HasAnyQuota ? 0 : 2;
+        }
+
+        if (TryGetArgumentValue(args, "--codex-task-status", out string? taskReport))
+        {
+            LocalCodexTaskReadResult status = new LocalCodexTaskSource().ReadAsync(CancellationToken.None)
+                .GetAwaiter().GetResult();
+            string path = Path.GetFullPath(taskReport ?? "codex-task-status.json");
+            Directory.CreateDirectory(Path.GetDirectoryName(path)!);
+            var states = status.Observations.GroupBy(observation => observation.Snapshot.State)
+                .ToDictionary(group => group.Key.ToString(), group => group.Count());
+            File.WriteAllText(path, JsonSerializer.Serialize(new
+            {
+                _metadata = new TraceMetadata(),
+                status.SourceAvailable, status.StatusMessage, status.InspectedFiles, status.MatchedFiles,
+                states, completions = status.CompletionEvents.Count
+            }, new JsonSerializerOptions { WriteIndented = true }));
+            return status.SourceAvailable ? 0 : 2;
         }
 
         if (TryGetArgumentValue(args, "--hit-test-underlay", out string? underlayReport))

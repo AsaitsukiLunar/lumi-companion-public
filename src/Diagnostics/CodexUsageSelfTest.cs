@@ -1,4 +1,4 @@
-// Version: 0.3.2-preview; Generated/Updated/Coverage: 2026-10-30 (Asia/Shanghai)
+// Version: 0.3.16-preview; Generated: 2026-10-30; Updated/Coverage: 2026-11-13 (Asia/Shanghai)
 // Source type: LOCAL-WORK; Node: Windows / Codex Desktop / Codex / Lumi usage-link subtask.
 // Original sources: current usage repair request, observed local quota schemas, synthetic regression fixtures.
 using System.Text.Json;
@@ -107,6 +107,34 @@ public static class CodexUsageSelfTest
             Identity(user: "switched-user");
             value = Read();
             Check(!value.HasAnyQuota && value.AccountScopeKey != scope, "account switch cannot retain prior account quota");
+
+            ClearSessions();
+            string activeOwner = new('a', 64);
+            string otherOwner = new('b', 64);
+            static object OwnerAtoms(string account, string user) => new Dictionary<string, object>
+            {
+                ["local-document-identity"] = new { accountId = account, accountUserId = user + "__" + account }
+            };
+            void ScopedIdentity(string owner) => File.WriteAllText(Path.Combine(root, ".codex-global-state.json"),
+                JsonSerializer.Serialize(new Dictionary<string, object>
+                {
+                    ["electron-renderer-content-owner"] = owner,
+                    ["electron-persisted-atom-state"] = OwnerAtoms("fixture-account", "fixture-user"),
+                    ["electron-owner-atoms:" + activeOwner] = OwnerAtoms("active-account", "active-user"),
+                    ["electron-owner-atoms:" + otherOwner] = OwnerAtoms("other-account", "other-user")
+                }));
+            Session("legacy-scope", new[] { Record(now, five: 98) });
+            Session("other-owner", new[] { Record(now, five: 99) }, account: "other-account", user: "other-user");
+            Session("active-owner", new[] { Record(now.AddMinutes(-2), five: 35) }, account: "active-account", user: "active-user");
+            ScopedIdentity(activeOwner);
+            value = Read();
+            Check(value.FiveHour?.UsedPercent == 35 && value.CapturedAt == now.AddMinutes(-2) &&
+                value.AccountScopeKey is { Length: 64 } && value.AccountScopeKey != scope,
+                "the active renderer owner selects its own quota over newer legacy and inactive-owner records");
+            ScopedIdentity(new string('c', 64));
+            value = Read();
+            Check(!value.HasAnyQuota && value.AccountScopeKey is null,
+                "a missing active owner scope must not fall back to legacy or inactive-owner quota");
 
             using var mappedOther = JsonDocument.Parse("""
                 {"result":{"rateLimitsByLimitId":{"other":{"primary":{"usedPercent":10,"windowDurationMins":300}}},

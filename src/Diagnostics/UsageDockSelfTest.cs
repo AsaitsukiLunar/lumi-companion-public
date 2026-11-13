@@ -368,11 +368,19 @@ public static class UsageDockSelfTest
             check(!AnyProgress(RenderPanel()), "the idle panel clears the progress stroke");
 
             panel.ApplyStatus(running, Steps(14));
+            bool EtaVisible(string text) => Descendants<Controls.TextBlock>(content).Any(label =>
+                label.Visibility == Visibility.Visible && label.Text == text);
+            check(EtaVisible("本任务预计剩余 暂无估计"),
+                "a running job without timing evidence does not show a guessed completion time");
+            var estimate = new ComfyUiEtaEstimate(TimeSpan.FromSeconds(25), TimeSpan.FromSeconds(50));
+            panel.ApplyStatus(running with { RunningEta = estimate }, Steps(14));
             var preview = RenderPanel();
             check(Marked(preview, 0, .7) && !Marked(preview, 0, .1) &&
                 Descendants<Controls.TextBlock>(content).Any(text => text.Text == "节点 349　14 / 15 步"),
                 "14 of 15 steps lights the left edge upwards and still displays the exact step count");
-            const string previewName = "comfyui-perimeter-preview.png";
+            check(EtaVisible("本任务预计剩余 约 25–50 秒"),
+                "the actual detailed panel shows the job estimate separately from node steps");
+            const string previewName = "comfyui-eta-preview.png";
             var encoder = new PngBitmapEncoder();
             encoder.Frames.Add(BitmapFrame.Create(preview));
             using (Stream output = File.Create(Path.Combine(directory, previewName))) encoder.Save(output);
@@ -381,6 +389,8 @@ public static class UsageDockSelfTest
             Descendants<Controls.Button>(content).Single(button => Equals(button.Content, "模式：节点步数"))
                 .RaiseEvent(new RoutedEventArgs(Controls.Button.ClickEvent));
             check(!AnyProgress(RenderPanel()), "queue-only mode hides the stroke even when valid node steps are available");
+            check(!EtaVisible("本任务预计剩余 约 25–50 秒"),
+                "queue-only mode hides estimated time");
 
             RenderTargetBitmap RenderPanel()
             {

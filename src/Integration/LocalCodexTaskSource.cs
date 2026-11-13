@@ -69,21 +69,8 @@ public sealed class LocalCodexTaskSource
     {
         cancellationToken.ThrowIfCancellationRequested();
         DateTimeOffset now = _timeProvider.GetUtcNow();
-        string accountId, accountUserId;
-        try
-        {
-            using var stream = OpenRead(Path.Combine(_codexRoot, ".codex-global-state.json"));
-            if (stream.Length > 8 * 1024 * 1024) return Unavailable();
-            using var json = JsonDocument.Parse(stream);
-            if (!Object(json.RootElement, "electron-persisted-atom-state", out var atom) ||
-                !Object(atom, "local-document-identity", out var identity) ||
-                !String(identity, "accountId", out accountId) ||
-                !String(identity, "accountUserId", out accountUserId)) return Unavailable();
-        }
-        catch (Exception ex) when (ex is IOException or UnauthorizedAccessException or JsonException)
-        { return Unavailable(); }
-
-        string scope = Hash(accountUserId);
+        if (LocalCodexAccountScope.Resolve(_codexRoot) is not { } account) return Unavailable();
+        string scope = account.ScopeKey;
         if (_scope != scope) { _cache.Clear(); _scope = scope; }
         var observations = new List<LocalCodexTaskObservation>();
         var completions = new List<ObservedCompletionEvent>();
@@ -123,7 +110,7 @@ public sealed class LocalCodexTaskSource
                 if (!_cache.TryGetValue(file.FullName, out var cached) || cached.Length != length ||
                     cached.ModifiedAt != modified)
                 {
-                    cached = ReadSession(file, accountId, accountUserId, now, cancellationToken);
+                    cached = ReadSession(file, account.AccountId, account.AccountUserId, now, cancellationToken);
                     _cache[file.FullName] = cached;
                 }
                 if (!cached.Matched) continue;

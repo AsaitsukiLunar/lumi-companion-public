@@ -1,9 +1,9 @@
 /*
 Traceability metadata
-Version: 0.3.14-beta.1
+Version: 0.3.16-beta.1
 Generated: 2026-07-25 (Asia/Shanghai)
-Last updated: 2026-11-11
-Content coverage through: 2026-11-11
+Last updated: 2026-11-13
+Content coverage through: 2026-11-13
 Source type: LOCAL-WORK; RAW (user quota reset time and ComfyUI panel placement requests)
 Source: Codex Desktop / workspace new-chat / current Lumi independent companion task / Codex
 */
@@ -14,7 +14,7 @@ namespace LumiCompanion.Models;
 
 public static class AppIdentity
 {
-    public const string Version = "0.3.14-beta.1";
+    public const string Version = "0.3.16-beta.1";
     public const string ProductName = "Lumi for Codex · 开发预览";
     public const string SourceType = "LOCAL-WORK";
     public const string Source = "Codex Desktop / workspace new-chat / current Lumi independent companion task / Codex";

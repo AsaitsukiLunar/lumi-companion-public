@@ -1,10 +1,10 @@
 /*
 Traceability metadata
-Version: 0.3.9-preview
+Version: 0.3.15-preview
 Generated: 2026-11-10 (Asia/Shanghai)
-Last updated: 2026-11-10
-Content coverage through: 2026-11-10
-Source type: RAW | user request for local ComfyUI status; LOCAL-WORK | snapshot model
+Last updated: 2026-11-13
+Content coverage through: 2026-11-13
+Source type: RAW | user request for local ComfyUI status and ETA; LOCAL-WORK | snapshot model
 Source: Codex Desktop / lumi-companion / independent Lumi companion chat / Codex
 Organizing node: Windows / Codex Desktop / ComfyUI HTTP status subtask
 Original sources: local ComfyUI queue and recent execution history requirements.
@@ -20,4 +20,9 @@ public sealed record ComfyUiStatusSnapshot(
     int? Succeeded,
     int? Failed,
     int? SavedOutputs,
-    string Status);
+    string Status)
+{
+    public ComfyUiEtaEstimate? RunningEta { get; init; }
+}
+
+public sealed record ComfyUiEtaEstimate(TimeSpan Lower, TimeSpan Upper);
