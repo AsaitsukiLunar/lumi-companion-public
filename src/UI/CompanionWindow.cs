@@ -1,14 +1,15 @@
 /*
 Traceability metadata
-Version: 0.3.4-preview
+Version: 0.3.19-preview
 Generated: 2026-07-25 (Asia/Shanghai)
-Last updated: 2026-10-30
-Content coverage through: 2026-10-30
-Source type: LOCAL-WORK
+Last updated: 2026-11-16
+Content coverage through: 2026-11-16
+Source type: LOCAL-WORK; RAW (shared art anchor for status windows)
 Source: Codex Desktop / workspace new-chat / current Lumi independent companion task / Codex
 */
 
 using System.Windows;
+using System.Runtime.InteropServices;
 using System.Windows.Input;
 using System.Windows.Interop;
 using System.Windows.Media;
@@ -21,6 +22,22 @@ using Color = System.Windows.Media.Color;
 
 namespace LumiCompanion.UI;
 
+internal readonly record struct CompanionPanelLayout(Point FootAnchor, System.Windows.Size CanvasSize, Rect WorkArea, DpiScale Dpi)
+{
+    // The q-base is the embedded 384×416 idle reference. Ground is the edge below sole pixel row 385.
+    private const double FootX = 220.5 / 384;
+    private const double FootY = 386.0 / 416;
+    private const double FootToHead = (386.0 - 6) / 416;
+
+    internal static CompanionPanelLayout FromCanvas(Rect canvas, Rect workArea, DpiScale dpi) => new(
+        new Point(canvas.Left + canvas.Width * FootX, canvas.Top + canvas.Height * FootY), canvas.Size, workArea, dpi);
+
+    internal Rect Canvas => new(new Point(FootAnchor.X - CanvasSize.Width * FootX,
+        FootAnchor.Y - CanvasSize.Height * FootY), CanvasSize);
+
+    internal Point HeadAnchor => new(FootAnchor.X, FootAnchor.Y - CanvasSize.Height * FootToHead);
+}
+
 public sealed class CompanionWindow : Window, IDisposable
 {
     private readonly SpritePresenter _presenter;
@@ -32,6 +49,7 @@ public sealed class CompanionWindow : Window, IDisposable
     private bool _fullscreenHidden;
     private int _requestedPixelWidth;
     private string _hint = "待机";
+    private string? _availableUpdate;
     private BodyInputWindow? _bodyInput;
     private bool _dragging;
     private bool _bodyDragActive;
@@ -176,6 +194,22 @@ public sealed class CompanionWindow : Window, IDisposable
     {
         _allowClose = true;
         Close();
+    }
+
+    internal bool TryGetPanelLayout(out CompanionPanelLayout layout)
+    {
+        layout = default;
+        if (_handle == IntPtr.Zero || !NativeMethods.GetWindowRect(_handle, out var bounds) ||
+            bounds.Width <= 0 || bounds.Height <= 0) return false;
+
+        IntPtr monitor = NativeMethods.MonitorFromWindow(_handle, NativeMethods.MONITOR_DEFAULTTONEAREST);
+        var info = new NativeMethods.MONITORINFO { cbSize = (uint)Marshal.SizeOf<NativeMethods.MONITORINFO>() };
+        if (!NativeMethods.GetMonitorInfo(monitor, ref info)) return false;
+
+        var canvas = new Rect(bounds.Left, bounds.Top, bounds.Width, bounds.Height);
+        var work = new Rect(info.rcWork.Left, info.rcWork.Top, info.rcWork.Width, info.rcWork.Height);
+        layout = CompanionPanelLayout.FromCanvas(canvas, work, VisualTreeHelper.GetDpi(this));
+        return true;
     }
 
     public void ClampToWorkingArea()
@@ -470,8 +504,17 @@ public sealed class CompanionWindow : Window, IDisposable
 
     private string BuildToolTip()
     {
-        string privacy = _settings.SensorsPaused ? "感知已暂停" : "离线感知中";
-        return $"Lumi · {_hint}\n{privacy}\n右键打开设置；滚轮缩放；双击互动";
+        string privacy = _settings.SensorsPaused ? "感知已暂停" : "本机感知中";
+        string update = _availableUpdate is { } version ? $"\nGitHub 有新版 v{version}" : string.Empty;
+        return $"Lumi v{AppIdentity.Version} · {_hint}\n{privacy}{update}\n右键打开设置 · 滚轮缩放 · 双击互动";
+    }
+
+    internal void SetAvailableUpdate(string? version)
+    {
+        if (string.Equals(_availableUpdate, version, StringComparison.Ordinal)) return;
+        _availableUpdate = version;
+        ToolTip = BuildToolTip();
+        if (_bodyInput is not null) _bodyInput.ToolTip = ToolTip;
     }
 
     private void OnClosing(object? sender, System.ComponentModel.CancelEventArgs e)

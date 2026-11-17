@@ -1,6 +1,6 @@
-// Version: 0.3.14-preview
-// Generated: 2026-10-30 | Updated/Coverage: 2026-11-11 (Asia/Shanghai)
-// Source type: RAW (user task and pointer priority requirements), LOCAL-WORK (synthetic regressions).
+// Version: 0.3.21-preview
+// Generated: 2026-10-30 | Updated/Coverage: 2026-11-17 (Asia/Shanghai)
+// Source type: RAW (user task, pointer priority and agent separation requirements), LOCAL-WORK (synthetic regressions).
 // Node: Windows / Codex Desktop / Codex. Original sources: current Lumi conversation and WorkBuddy bridge handoff V1.0.
 using System.Text.Json;
 using LumiCompanion.Animation;
@@ -29,7 +29,7 @@ public static class TaskBehaviorSelfTest
             behavior.SetLookDirection(5);
             int emitted = 0;
             behavior.VisualStateChanged += (_, _) => emitted++;
-            AgentTaskSnapshot Snapshot(string id, AgentTaskState state, string source = "synthetic-codex", int leaseSeconds = 300) =>
+            AgentTaskSnapshot Snapshot(string id, AgentTaskState state, string source = LocalCodexTaskSource.SourceId, int leaseSeconds = 300) =>
                 new(source, id, state, clock.GetUtcNow(), clock.GetUtcNow().AddSeconds(leaseSeconds));
             void Observe(string id, AgentTaskState state, string? version = null, bool announce = true)
             {
@@ -173,7 +173,7 @@ public static class TaskBehaviorSelfTest
             Check(behavior.CurrentAnimation == AnimationId.Look, "drag acknowledgement returns to gaze without reviving terminal loop");
             behavior.AcknowledgeTaskNotifications();
             Check(behavior.CurrentAnimation == AnimationId.Look, "silent acknowledgement does not synthesize a touch wave");
-            behavior.DisconnectTaskSource("synthetic-codex");
+            behavior.DisconnectTaskSource(LocalCodexTaskSource.SourceId);
             Observe("a", AgentTaskState.Completed, "turn-4-completed");
             Check(behavior.CurrentAnimation == AnimationId.Look, "same acknowledged event stays acknowledged after source reconnect");
 
@@ -210,6 +210,7 @@ public static class TaskBehaviorSelfTest
             hovering.SetBodyHovered(true);
             Check(hovering.CurrentAnimation == AnimationId.Idle, "body hover immediately preempts an earlier passive reaction");
             RunConversationProgressScenarios(Check);
+            RunSourceProgressScenario(Check);
             RunPendingTerminalScenarios(Check);
             RunRunningPriorityScenarios(Check);
             RunWorkBuddyScenarios(Check);
@@ -220,7 +221,7 @@ public static class TaskBehaviorSelfTest
         File.WriteAllText(reportPath, JsonSerializer.Serialize(new
         {
             _metadata = new TraceMetadata(),
-            scope = "Synthetic Codex and WorkBuddy task states, event versions, pointer hover/drag inputs and deterministic clock.",
+            scope = "Synthetic Codex, WorkBuddy and additional-agent task states, event versions, pointer inputs and deterministic clock.",
             ok = error is null, checks, error
         }, new JsonSerializerOptions { WriteIndented = true }));
         return error is null ? 0 : 1;
@@ -230,7 +231,7 @@ public static class TaskBehaviorSelfTest
     {
         var clock = new TestClock();
         void Observe(BehaviorController target, string id, AgentTaskState state, string version,
-            string source = "batch-a", int leaseSeconds = 300, bool announce = true, string? turn = null)
+            string source = LocalCodexTaskSource.SourceId, int leaseSeconds = 300, bool announce = true, string? turn = null)
         {
             clock.Advance(TimeSpan.FromMilliseconds(1));
             DateTimeOffset at = clock.GetUtcNow();
@@ -244,9 +245,9 @@ public static class TaskBehaviorSelfTest
         Observe(batch, "old", AgentTaskState.Completed, "history", announce: false);
         check(Progress(batch).TotalCount == 0, "startup historical terminal records do not enter current batch counts");
         Observe(batch, "same-chat", AgentTaskState.Running, "a-start");
-        Observe(batch, "same-chat", AgentTaskState.Running, "b-start", source: "batch-b");
+        Observe(batch, "other-chat", AgentTaskState.Running, "b-start");
         check(Progress(batch).TotalCount == 2 && Progress(batch).ProcessingCount == 2,
-            "conversation counts deduplicate by source plus chat and distinguish identical IDs from separate sources");
+            "the Codex batch counts each of its parallel chats once");
         Observe(batch, "same-chat", AgentTaskState.Completed, "a-end");
         Observe(batch, "same-chat", AgentTaskState.Completed, "a-end");
         Observe(batch, "same-chat", AgentTaskState.Completed, "a-new-end", turn: "a-end");
@@ -256,14 +257,14 @@ public static class TaskBehaviorSelfTest
         batch.HandleAnimationCompleted(AnimationId.Waving);
         check(Progress(batch).CompletedCount == 1 && batch.CurrentAnimation == AnimationId.Running,
             "confirming a completed chat retains its batch count while another chat keeps running");
-        Observe(batch, "same-chat", AgentTaskState.Review, "b-review", source: "batch-b");
+        Observe(batch, "other-chat", AgentTaskState.Review, "b-review");
         check(Progress(batch).ProcessingCount == 1 && Progress(batch).ReviewCount == 1 && batch.GetTaskState().RunningCount == 0,
             "processing count includes review without changing the original running-state counter");
         Observe(batch, "same-chat", AgentTaskState.Running, "a-next-turn");
         check(Progress(batch).CompletedCount == 1 && Progress(batch).ProcessingCount == 2 && Progress(batch).TotalCount == 3,
             "new work in the same chat preserves earlier completed turns while counting each live chat once");
         Observe(batch, "same-chat", AgentTaskState.Completed, "a-next-end");
-        Observe(batch, "same-chat", AgentTaskState.Completed, "b-end", source: "batch-b");
+        Observe(batch, "other-chat", AgentTaskState.Completed, "b-end");
         check(Progress(batch).AllCompleted && Progress(batch).CompletedCount == 3 && batch.CurrentLoopOverride == true,
             "all-completed reports three completed turns across the two chats only after live work ends");
         batch.SetBodyHovered(true); batch.SetBodyHovered(false);
@@ -274,7 +275,7 @@ public static class TaskBehaviorSelfTest
         batch.HandleAnimationCompleted(AnimationId.Waving);
         Observe(batch, "same-chat", AgentTaskState.Completed, "a-end");
         Observe(batch, "same-chat", AgentTaskState.Completed, "a-next-end");
-        Observe(batch, "same-chat", AgentTaskState.Completed, "b-end", source: "batch-b");
+        Observe(batch, "other-chat", AgentTaskState.Completed, "b-end");
         check(Progress(batch).TotalCount == 0 && batch.CurrentAnimation == AnimationId.Idle,
             "repeated acknowledged terminal observations cannot reopen batch counts");
 
@@ -351,23 +352,64 @@ public static class TaskBehaviorSelfTest
         var scoped = new BehaviorController(new LumiSettings(), clock);
         Observe(scoped, "a", AgentTaskState.Completed, "done");
         Observe(scoped, "b", AgentTaskState.Running, "running", source: "batch-b");
-        scoped.DisconnectTaskSource("batch-a");
-        check(Progress(scoped).TotalCount == 1 && Progress(scoped).CompletedCount == 0 && Progress(scoped).ProcessingCount == 1,
+        scoped.DisconnectTaskSource(LocalCodexTaskSource.SourceId);
+        check(Progress(scoped).TotalCount == 0 && scoped.GetTaskState().ProgressBySource?.GetValueOrDefault("batch-b") is
+            { TotalCount: 1, CompletedCount: 0, ProcessingCount: 1 },
             "disconnect removes only that source's batch counts and preserves another source's active work");
         scoped.DisconnectTaskSource("batch-b");
-        check(Progress(scoped).TotalCount == 0, "source loss clears batch counts instead of carrying them across identity boundaries");
+        check(scoped.GetTaskState().ProgressBySource is { Count: 0 },
+            "source loss clears batch counts instead of carrying them across identity boundaries");
         var disconnectedUnknown = new BehaviorController(new LumiSettings(), clock);
         Observe(disconnectedUnknown, "unknown-member", AgentTaskState.Running, "start");
         Observe(disconnectedUnknown, "unknown-member", AgentTaskState.Unknown, "unknown");
-        disconnectedUnknown.DisconnectTaskSource("batch-a");
+        disconnectedUnknown.DisconnectTaskSource(LocalCodexTaskSource.SourceId);
         check(Progress(disconnectedUnknown).TotalCount == 0, "explicit source disconnect also clears unresolved batch members");
+    }
+
+    private static void RunSourceProgressScenario(Action<bool, string> check)
+    {
+        var clock = new TestClock();
+        var behavior = new BehaviorController(new LumiSettings(), clock);
+        const string other = "fixture-agent";
+        void Observe(string source, AgentTaskState state)
+        {
+            clock.Advance(TimeSpan.FromMilliseconds(1));
+            DateTimeOffset at = clock.GetUtcNow();
+            behavior.ObserveTaskState(new(source, "same-chat", state, at, at.AddMinutes(1)), turnId: "same-turn");
+        }
+
+        Observe(LocalCodexTaskSource.SourceId, AgentTaskState.Running);
+        Observe(LocalWorkBuddyTaskSource.SourceId, AgentTaskState.Waiting);
+        Observe(other, AgentTaskState.Completed);
+        AggregateTaskState parallel = behavior.GetTaskState();
+        check(parallel.ProgressBySource is { Count: 3 } sources &&
+            sources[LocalCodexTaskSource.SourceId] is { TotalCount: 1, ProcessingCount: 1, CompletedCount: 0 } &&
+            sources[LocalWorkBuddyTaskSource.SourceId] is { TotalCount: 1, WaitingCount: 1 } &&
+            sources[other] is { TotalCount: 1, CompletedCount: 1, AllCompleted: true } &&
+            parallel.Progress == sources[LocalCodexTaskSource.SourceId] &&
+            parallel.WorkBuddyProgress == sources[LocalWorkBuddyTaskSource.SourceId] &&
+            parallel.State == AgentTaskState.Waiting,
+            "every source owns its batch and animation arbitration still combines all three sources");
+
+        behavior.DisconnectTaskSource(LocalWorkBuddyTaskSource.SourceId);
+        AggregateTaskState disconnected = behavior.GetTaskState();
+        check(disconnected.ProgressBySource is { Count: 2 } remaining &&
+            !remaining.ContainsKey(LocalWorkBuddyTaskSource.SourceId) && remaining.ContainsKey(other) &&
+            disconnected.Progress is { ProcessingCount: 1, CompletedCount: 0 } &&
+            disconnected.WorkBuddyProgress is { TotalCount: 0 } && disconnected.State == AgentTaskState.Running,
+            "disconnecting WorkBuddy leaves Codex and the additional agent in independent batches");
+
+        behavior.HandleDirectInteraction();
+        check(behavior.GetTaskState().ProgressBySource is { Count: 1 } active &&
+            active[LocalCodexTaskSource.SourceId] is { ProcessingCount: 1 },
+            "confirming the additional agent's completed batch retains the other source's active work");
     }
 
     private static void RunPendingTerminalScenarios(Action<bool, string> check)
     {
         var clock = new TestClock();
         void Observe(BehaviorController target, string chat, string turn, AgentTaskState state,
-            string source = "pending-fixture", string? version = null)
+            string source = LocalCodexTaskSource.SourceId, string? version = null)
         {
             clock.Advance(TimeSpan.FromMilliseconds(1));
             DateTimeOffset at = clock.GetUtcNow();
@@ -444,8 +486,9 @@ public static class TaskBehaviorSelfTest
         Observe(scoped, "A", "old", AgentTaskState.Completed);
         clock.Advance(TimeSpan.FromSeconds(16)); scoped.Tick();
         Observe(scoped, "B", "live", AgentTaskState.Running, source: "other-source");
-        scoped.DisconnectTaskSource("pending-fixture");
-        check(Progress(scoped) is { ProcessingCount: 1, CompletedCount: 0 } && scoped.CurrentAnimation == AnimationId.Running,
+        scoped.DisconnectTaskSource(LocalCodexTaskSource.SourceId);
+        check(Progress(scoped) is { TotalCount: 0 } && scoped.CurrentAnimation == AnimationId.Running &&
+            scoped.GetTaskState().ProgressBySource?.GetValueOrDefault("other-source") is { ProcessingCount: 1, CompletedCount: 0 },
             "explicit source disconnect removes its expired results while another source keeps working");
     }
 
@@ -456,7 +499,7 @@ public static class TaskBehaviorSelfTest
         {
             clock.Advance(TimeSpan.FromMilliseconds(1));
             DateTimeOffset at = clock.GetUtcNow();
-            if (!target.ObserveTaskState(new("running-priority", chat, state, at, at.AddSeconds(15)),
+            if (!target.ObserveTaskState(new(LocalCodexTaskSource.SourceId, chat, state, at, at.AddSeconds(15)),
                 turn + ":" + state, turnId: turn))
                 throw new InvalidOperationException("Invalid Running-priority fixture.");
         }
@@ -574,7 +617,7 @@ public static class TaskBehaviorSelfTest
         {
             clock.Advance(TimeSpan.FromMilliseconds(1));
             DateTimeOffset now = clock.GetUtcNow();
-            target.ObserveTaskState(new("codex-fixture", taskId, state, now, now.AddMinutes(5)), turnId: taskId);
+            target.ObserveTaskState(new(LocalCodexTaskSource.SourceId, taskId, state, now, now.AddMinutes(5)), turnId: taskId);
         }
 
         var mixed = new BehaviorController(new LumiSettings(), clock);

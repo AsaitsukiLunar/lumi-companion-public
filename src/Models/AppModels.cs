@@ -1,23 +1,27 @@
 /*
 Traceability metadata
-Version: 0.3.16-beta.1
+Version: 0.3.22-beta.1
 Generated: 2026-07-25 (Asia/Shanghai)
-Last updated: 2026-11-13
-Content coverage through: 2026-11-13
-Source type: LOCAL-WORK; RAW (user quota reset time and ComfyUI panel placement requests)
-Source: Codex Desktop / workspace new-chat / current Lumi independent companion task / Codex
+Last updated: 2026-11-17
+Content coverage through: 2026-11-17
+Source type: LOCAL-WORK; RAW (user panel sizing, elevation and animation anchor requirements)
+Source: Lumi Companion / Codex
 */
 
+using System.Reflection;
 using System.Text.Json.Serialization;
 
 namespace LumiCompanion.Models;
 
 public static class AppIdentity
 {
-    public const string Version = "0.3.16-beta.1";
-    public const string ProductName = "Lumi for Codex · 开发预览";
+    private static readonly Assembly ApplicationAssembly = typeof(AppIdentity).Assembly;
+    public static string Version { get; } =
+        ApplicationAssembly.GetCustomAttribute<AssemblyInformationalVersionAttribute>()?.InformationalVersion.Split('+', 2)[0] ??
+        ApplicationAssembly.GetName().Version?.ToString(3) ?? "未知版本";
+    public const string ProductName = "Lumi Companion · 公开预发布";
     public const string SourceType = "LOCAL-WORK";
-    public const string Source = "Codex Desktop / workspace new-chat / current Lumi independent companion task / Codex";
+    public const string Source = "Lumi Companion";
 }
 
 public sealed class TraceMetadata
@@ -50,6 +54,10 @@ public sealed class TraceMetadata
 
 public sealed class LumiSettings
 {
+    internal const int PanelScaleMinimumPercent = 75;
+    internal const int PanelScaleMaximumPercent = 150;
+    internal const int PanelElevationLimit = 240;
+
     [JsonPropertyName("_metadata")]
     public TraceMetadata Metadata { get; set; } = new();
 
@@ -110,6 +118,24 @@ public sealed class LumiSettings
     [JsonPropertyName("codexUsageRefreshMinutes")]
     public int CodexUsageRefreshMinutes { get; set; } = 5;
 
+    [JsonPropertyName("taskBubbleScalePercent")]
+    public int TaskBubbleScalePercent { get; set; } = 100;
+
+    [JsonPropertyName("taskBubbleElevation")]
+    public int TaskBubbleElevation { get; set; }
+
+    [JsonPropertyName("codexUsageScalePercent")]
+    public int CodexUsageScalePercent { get; set; } = 100;
+
+    [JsonPropertyName("codexUsageElevation")]
+    public int CodexUsageElevation { get; set; }
+
+    [JsonPropertyName("comfyUiScalePercent")]
+    public int ComfyUiScalePercent { get; set; } = 100;
+
+    [JsonPropertyName("comfyUiElevation")]
+    public int ComfyUiElevation { get; set; }
+
     [JsonPropertyName("saveLocalStats")]
     public bool SaveLocalStats { get; set; } = true;
 
@@ -145,6 +171,12 @@ public sealed class LumiSettings
         PetWidth = Math.Clamp(PetWidth, 96, 320);
         PetWidthUnit = "physical-pixel";
         CodexUsageRefreshMinutes = Math.Clamp(CodexUsageRefreshMinutes, 1, 60);
+        TaskBubbleScalePercent = Math.Clamp(TaskBubbleScalePercent, PanelScaleMinimumPercent, PanelScaleMaximumPercent);
+        CodexUsageScalePercent = Math.Clamp(CodexUsageScalePercent, PanelScaleMinimumPercent, PanelScaleMaximumPercent);
+        ComfyUiScalePercent = Math.Clamp(ComfyUiScalePercent, PanelScaleMinimumPercent, PanelScaleMaximumPercent);
+        TaskBubbleElevation = Math.Clamp(TaskBubbleElevation, -PanelElevationLimit, PanelElevationLimit);
+        CodexUsageElevation = Math.Clamp(CodexUsageElevation, -PanelElevationLimit, PanelElevationLimit);
+        ComfyUiElevation = Math.Clamp(ComfyUiElevation, -PanelElevationLimit, PanelElevationLimit);
         HistoryRetentionDays = Math.Clamp(HistoryRetentionDays, 1, 90);
         DrowsyAfterSeconds = Math.Clamp(DrowsyAfterSeconds, 30, 3600);
         SleepAfterSeconds = Math.Clamp(SleepAfterSeconds, DrowsyAfterSeconds + 30, 14400);

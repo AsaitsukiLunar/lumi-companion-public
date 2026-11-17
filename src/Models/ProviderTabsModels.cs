@@ -54,7 +54,7 @@ public sealed class ProviderTabsMetadata
     public string LastUpdatedAt { get; set; } = DateTimeOffset.Now.ToString("O");
     public string ContentCoverageThrough { get; set; } = "2026-10-30";
     public string SourceType { get; set; } = "RAW | user settings; LOCAL-WORK | generated defaults and implementation";
-    public string Source { get; set; } = "Codex Desktop / 云端本地互通文件夹 / current Lumi conversation (title unverified) / Codex";
+    public string Source { get; set; } = "Lumi Companion";
     public string OrganizingNode { get; set; } = "Windows / Codex Desktop / Codex";
     public string OriginalSources { get; set; } = "User provider names and dashboard links; Codex local default configuration";
 }

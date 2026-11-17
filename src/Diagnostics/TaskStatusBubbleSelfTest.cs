@@ -1,6 +1,6 @@
 /*
-Version: 0.3.14-preview
-Generated: 2026-10-30; updated/coverage: 2026-11-11 (Asia/Shanghai)
+Version: 0.3.21-preview
+Generated: 2026-10-30; updated/coverage: 2026-11-17 (Asia/Shanghai)
 Source: RAW (user task bubble requirements), LOCAL-WORK (synthetic WPF and geometry tests).
 Node: Windows / Codex Desktop / Codex. Original source: current Lumi conversation.
 */
@@ -46,8 +46,8 @@ public static class TaskStatusBubbleSelfTest
         {
             AggregateTaskState State(AgentTaskState state, int running = 0) => new(state, running, state == AgentTaskState.Waiting ? 1 : 0, 1, false);
             ConversationProgress Batch(params AgentTaskState[] states) => ConversationProgress.FromStates(states, currentBatch: true);
-            Check(TaskStatusBubbleWindow.Describe(State(AgentTaskState.Running)) == "正在处理 1 条对话", "single running conversation explicitly shows one");
-            Check(TaskStatusBubbleWindow.Describe(State(AgentTaskState.Running, 3)) == "正在处理 3 条对话", "multiple running conversations show a count");
+            Check(TaskStatusBubbleWindow.Describe(State(AgentTaskState.Running)) == "Codex · 正在处理 1 条对话", "a Codex-only bubble identifies its source");
+            Check(TaskStatusBubbleWindow.Describe(State(AgentTaskState.Running, 3)) == "Codex · 正在处理 3 条对话", "multiple running conversations show a count");
             var codex = State(AgentTaskState.Running) with
             {
                 Progress = Batch(AgentTaskState.Running)
@@ -59,6 +59,16 @@ public static class TaskStatusBubbleSelfTest
             Check(TaskStatusBubbleWindow.Describe(codex with { WorkBuddyProgress = workBuddyComplete }) ==
                   "Codex · 正在处理 1 条对话\nWorkBuddy · 本批 1 轮已完成\n点击角色确认",
                   "WorkBuddy completion gets the shared confirmation hint without changing the Codex running count");
+            Check(TaskStatusBubbleWindow.Describe(codex with
+            {
+                ProgressBySource = new Dictionary<string, ConversationProgress>
+                {
+                    ["Hermes"] = Batch(AgentTaskState.Waiting),
+                    [LocalWorkBuddyTaskSource.SourceId] = workBuddyComplete,
+                    [LocalCodexTaskSource.SourceId] = Batch(AgentTaskState.Running)
+                }
+            }) == "Codex · 正在处理 1 条对话\nWorkBuddy · 本批 1 轮已完成\nHermes · 1 条等你确认\n点击角色确认",
+                "an additional Agent snapshot retains its own label and shares the acknowledgement hint");
             var noCodex = codex with { Progress = Batch() };
             Check(TaskStatusBubbleWindow.Describe(noCodex with { WorkBuddyProgress = Batch(AgentTaskState.Unknown) }) ==
                   "WorkBuddy · 1 条状态待核", "an unresolved WorkBuddy batch uses the same wording without creating a Codex entry");
@@ -68,19 +78,19 @@ public static class TaskStatusBubbleSelfTest
                   "WorkBuddy · 1 轮遇到问题\n点击角色确认" &&
                   TaskStatusBubbleWindow.Describe(noCodex with { WorkBuddyProgress = Batch(AgentTaskState.Idle) }) is null,
                   "WorkBuddy waiting, failure and idle follow the common batch display rules");
-            Check(TaskStatusBubbleWindow.Describe(State(AgentTaskState.Waiting)) == "1 条等你确认" &&
-                  TaskStatusBubbleWindow.Describe(State(AgentTaskState.Review)) == "正在处理 1 条对话", "waiting stays separate while review is included in processing");
-            Check(TaskStatusBubbleWindow.Describe(State(AgentTaskState.Completed)) == "已完成 1 轮\n点击角色确认" &&
-                  TaskStatusBubbleWindow.Describe(State(AgentTaskState.Failed)) == "1 轮遇到问题\n点击角色确认", "terminal wording requests an explicit character interaction");
+            Check(TaskStatusBubbleWindow.Describe(State(AgentTaskState.Waiting)) == "Codex · 1 条等你确认" &&
+                  TaskStatusBubbleWindow.Describe(State(AgentTaskState.Review)) == "Codex · 正在处理 1 条对话", "waiting stays separate while review is included in processing");
+            Check(TaskStatusBubbleWindow.Describe(State(AgentTaskState.Completed)) == "Codex · 已完成 1 轮\n点击角色确认" &&
+                  TaskStatusBubbleWindow.Describe(State(AgentTaskState.Failed)) == "Codex · 1 轮遇到问题\n点击角色确认", "terminal wording requests an explicit character interaction");
             Check(TaskStatusBubbleWindow.Describe(State(AgentTaskState.Unknown)) is null &&
                   TaskStatusBubbleWindow.Describe(State(AgentTaskState.Idle)) is null, "unknown and idle hide the bubble");
             var mixedProgress = State(AgentTaskState.Running, 2) with
             { Progress = new ConversationProgress(3, 1, 1, 1, 0, 0, 0, 0, IsCurrentBatch: true) };
-            Check(TaskStatusBubbleWindow.Describe(mixedProgress) == "正在处理 2 条对话\n已完成 1 轮",
+            Check(TaskStatusBubbleWindow.Describe(mixedProgress) == "Codex · 正在处理 2 条对话\n已完成 1 轮",
                 "mixed current batch shows processing including review and completed count on separate lines");
             var allCompleted = State(AgentTaskState.Completed) with
             { Progress = new ConversationProgress(3, 0, 0, 3, 0, 0, 0, 0, IsCurrentBatch: true) };
-            Check(TaskStatusBubbleWindow.Describe(allCompleted) == "本批 3 轮已完成\n点击角色确认",
+            Check(TaskStatusBubbleWindow.Describe(allCompleted) == "Codex · 本批 3 轮已完成\n点击角色确认",
                 "all-completed wording names only the current observed batch and asks for confirmation");
             Check(TaskStatusBubbleWindow.Describe(allCompleted with { WorkBuddyProgress = workBuddyComplete }) ==
                   "Codex · 本批 3 轮已完成\nWorkBuddy · 本批 1 轮已完成\n点击角色确认",
@@ -89,7 +99,7 @@ public static class TaskStatusBubbleSelfTest
             {
                 var partial = State(AgentTaskState.Completed) with
                 { Progress = ConversationProgress.FromStates([AgentTaskState.Completed, blocker], currentBatch: true) };
-                Check(TaskStatusBubbleWindow.Describe(partial) is { } message && !message.StartsWith("本批 "),
+                Check(TaskStatusBubbleWindow.Describe(partial) is { } message && !message.StartsWith("Codex · 本批 "),
                     $"{blocker} never permits a batch-wide success message");
                 if (blocker == AgentTaskState.Unknown)
                     Check(!TaskStatusBubbleWindow.Describe(partial)!.Contains("确认"),
@@ -97,22 +107,34 @@ public static class TaskStatusBubbleSelfTest
             }
             var onlyUnknown = State(AgentTaskState.Unknown) with
             { Progress = ConversationProgress.FromStates([AgentTaskState.Unknown], currentBatch: true) };
-            Check(TaskStatusBubbleWindow.Describe(onlyUnknown) == "1 条状态待核",
+            Check(TaskStatusBubbleWindow.Describe(onlyUnknown) == "Codex · 1 条状态待核",
                 "unresolved current batch stays visible without claiming completion or asking to clear it");
             var area = new Rect(-1000, -200, 1000, 800);
             var size = new System.Windows.Size(178, 30);
             foreach (Rect body in new[] { new Rect(-990, -195, 130, 200), new Rect(-140, -195, 130, 200),
                 new Rect(-990, 390, 130, 200), new Rect(-140, 390, 130, 200) })
             {
-                Rect? planned = TaskStatusBubbleWindow.PlanPlacement(body, area, size, null);
+                Rect? planned = TaskStatusBubbleWindow.PlanPlacement(new Point(body.Left + body.Width / 2, body.Top), body, area, size);
                 Check(planned is { } fit && area.Contains(fit) && !fit.IntersectsWith(body), "monitor edge and negative coordinates keep bubble visible without covering body");
             }
             var centerBody = new Rect(250, 200, 100, 180);
             var centerArea = new Rect(0, 0, 800, 600);
-            Rect? normal = TaskStatusBubbleWindow.PlanPlacement(centerBody, centerArea, size, null);
-            Rect? avoid = TaskStatusBubbleWindow.PlanPlacement(centerBody, centerArea, size, normal);
-            Check(normal.HasValue && avoid.HasValue && !avoid.Value.IntersectsWith(normal.Value), "placement avoids an occupied quota card rectangle");
-            Check(TaskStatusBubbleWindow.PlanPlacement(new Rect(0, 0, 80, 80), new Rect(0, 0, 80, 80), size, null) is null,
+            var centerHead = new Point(300, 200);
+            Rect? normal = TaskStatusBubbleWindow.PlanPlacement(centerHead, centerBody, centerArea, size);
+            Check(normal is { } above && above.Bottom < centerBody.Top && above.Left + above.Width / 2 == 300,
+                "bubble is centered above the body when there is headroom");
+            Rect? raised = TaskStatusBubbleWindow.PlanPlacement(centerHead, centerBody, centerArea, size, elevation: 24);
+            Check(raised is { } adjusted && adjusted.Top == normal!.Value.Top - 24 && adjusted.Left == normal.Value.Left,
+                "positive bubble elevation moves the preferred head position upward");
+            var topSprite = new Rect(904, 0, 192, 208);
+            var topLayout = CompanionPanelLayout.FromCanvas(topSprite, new Rect(0, 0, 1920, 1040), new DpiScale(1, 1));
+            Check(topLayout.FootAnchor == new Point(1014.25, 193) && topLayout.HeadAnchor == new Point(1014.25, 3) &&
+                  topLayout.Canvas == topSprite, "q-base shoe anchor projects to half-size art and reconstructs the fixed canvas");
+            Rect? topBubble = TaskStatusBubbleWindow.PlanPlacement(topLayout.HeadAnchor, topLayout.Canvas, topLayout.WorkArea,
+                new System.Windows.Size(178, 38));
+            Check(topBubble is { } below && below.Top > topSprite.Bottom && below.Left + below.Width / 2 == topLayout.FootAnchor.X,
+                "when pinned to the top, the bubble is centered below the whole sprite including the cable");
+            Check(TaskStatusBubbleWindow.PlanPlacement(new Point(40, 0), new Rect(0, 0, 80, 80), new Rect(0, 0, 80, 80), size) is null,
                 "no safe room hides the bubble rather than covering the face or leaving the monitor");
 
             string executable = Environment.ProcessPath ?? throw new InvalidOperationException("Missing executable path.");
@@ -165,14 +187,15 @@ public static class TaskStatusBubbleSelfTest
             NativeMethods.GetWindowRect(bubbleHandle, out var movedBubble);
             Check(Math.Abs(movedBubble.Left - standingBubble.Left - 40) <= 1 &&
                   Math.Abs(movedBubble.Top - standingBubble.Top - 15) <= 1, "bubble follows companion physical window movement");
-            Rect standingBody = TaskStatusBubbleWindow.FindBodyBounds(pet.CurrentHitMask!);
+            SpriteHitMask? standing = pet.CurrentHitMask;
             pet.SetVisual(AnimationId.Failed, null, "合成蹲姿", loopOverride: false, startFrameOverride: 4, endFrameOverride: 4);
+            Pump();
+            NativeMethods.GetWindowRect(bubbleHandle, out var crouchedBubble);
+            Check(pet.CurrentHitMask is { } crouching && crouching != standing && crouchedBubble.Top == movedBubble.Top &&
+                  crouchedBubble.Left == movedBubble.Left,
+                "crouching changes the sprite without moving the bubble");
             bubble.SetTaskState(State(AgentTaskState.Failed));
             Pump();
-            Rect crouchingBody = TaskStatusBubbleWindow.FindBodyBounds(pet.CurrentHitMask!);
-            NativeMethods.GetWindowRect(bubbleHandle, out var crouchedBubble);
-            Check(crouchingBody.Top > standingBody.Top && crouchedBubble.Top > movedBubble.Top + 20,
-                "crouched pose lowers bubble anchor to current body instead of original canvas top");
             SaveComposition(Path.Combine(directory, "bubble-crouched.png"), pet, bubble);
             renders.Add("bubble-crouched.png");
 
@@ -180,7 +203,8 @@ public static class TaskStatusBubbleSelfTest
             badge = new CodexUsageBadgeWindow(pet, new ProviderTabsStore(temporary));
             badge.ApplySettings(new LumiSettings { ShowCodexUsage = true, AlwaysOnTop = true });
             badge.SetExpanded(true);
-            bubble = new TaskStatusBubbleWindow(pet, badge);
+            bubble = new TaskStatusBubbleWindow(pet);
+            badge.SetStatusBubble(bubble);
             bubble.SetTaskState(State(AgentTaskState.Failed));
             Pump();
             Check(bubble.IsVisible && !WindowRect(bubble).IntersectsWith(WindowRect(badge)), "bubble and expanded quota card occupy separate rectangles");
@@ -189,11 +213,11 @@ public static class TaskStatusBubbleSelfTest
 
             var behavior = new BehaviorController(new LumiSettings());
             DateTimeOffset now = DateTimeOffset.UtcNow;
-            behavior.ObserveTaskState(new AgentTaskSnapshot("synthetic", "chat", AgentTaskState.Completed, now, now.AddMinutes(5)), "turn-1");
+            behavior.ObserveTaskState(new AgentTaskSnapshot(LocalCodexTaskSource.SourceId, "chat", AgentTaskState.Completed, now, now.AddMinutes(5)), "turn-1");
             bubble.SetTaskState(behavior.GetTaskState());
             behavior.SetBodyHovered(true);
             bubble.SetTaskState(behavior.GetTaskState());
-            Check(bubble.IsVisible && TaskStatusBubbleWindow.Describe(behavior.GetTaskState()) == "本批 1 轮已完成\n点击角色确认",
+            Check(bubble.IsVisible && TaskStatusBubbleWindow.Describe(behavior.GetTaskState()) == "Codex · 本批 1 轮已完成\n点击角色确认",
                 "pointer hover does not erase underlying task status bubble");
             bubble.SetTaskState(allCompleted);
             pet.SetVisual(AnimationId.Jumping, null, "合成本批完成", loopOverride: true);
@@ -210,7 +234,7 @@ public static class TaskStatusBubbleSelfTest
 
             var activeBehavior = new BehaviorController(new LumiSettings());
             DateTimeOffset activeAt = DateTimeOffset.UtcNow;
-            activeBehavior.ObserveTaskState(new AgentTaskSnapshot("synthetic", "active-chat", AgentTaskState.Running,
+            activeBehavior.ObserveTaskState(new AgentTaskSnapshot(LocalCodexTaskSource.SourceId, "active-chat", AgentTaskState.Running,
                 activeAt, activeAt.AddMinutes(5)), "running-turn");
             activeBehavior.SetDragging(true);
             bubble.SetTaskState(activeBehavior.GetTaskState());
@@ -220,7 +244,7 @@ public static class TaskStatusBubbleSelfTest
             bubble.SetTaskState(mixedProgress); Pump();
             Check(bubble.IsVisible && bubble.Height > 30 &&
                 ((System.Windows.Controls.TextBlock)((System.Windows.Controls.Border)bubble.Content).Child).Text ==
-                    "正在处理 2 条对话\n已完成 1 轮",
+                    "Codex · 正在处理 2 条对话\n已完成 1 轮",
                 "actual multiline bubble grows to show both counts without an ellipsis");
             SaveComposition(Path.Combine(directory, "bubble-progress.png"), pet, bubble);
             renders.Add("bubble-progress.png");
@@ -257,19 +281,19 @@ public static class TaskStatusBubbleSelfTest
                 bubble.SetTaskState(sharedBehavior.GetTaskState());
                 Pump();
             }
-            Report("synthetic-codex", "codex-chat", "running", AgentTaskState.Running);
+            Report(LocalCodexTaskSource.SourceId, "codex-chat", "running", AgentTaskState.Running);
             Report(LocalWorkBuddyTaskSource.SourceId, "workspace-fixture", "done", AgentTaskState.Completed);
             Check(bubble.IsVisible && TaskStatusBubbleWindow.Describe(sharedBehavior.GetTaskState()) ==
                 "Codex · 正在处理 1 条对话\nWorkBuddy · 本批 1 轮已完成\n点击角色确认",
                 "the real bubble displays WorkBuddy completion alongside still-running Codex work");
             sharedBehavior.HandleDirectInteraction();
             bubble.SetTaskState(sharedBehavior.GetTaskState());
-            Check(bubble.IsVisible && TaskStatusBubbleWindow.Describe(sharedBehavior.GetTaskState()) == "正在处理 1 条对话",
+            Check(bubble.IsVisible && TaskStatusBubbleWindow.Describe(sharedBehavior.GetTaskState()) == "Codex · 正在处理 1 条对话",
                 "one click hides WorkBuddy completion immediately without hiding running Codex work");
             Report(LocalWorkBuddyTaskSource.SourceId, "workspace-fixture", "done", AgentTaskState.Completed);
-            Check(bubble.IsVisible && TaskStatusBubbleWindow.Describe(sharedBehavior.GetTaskState()) == "正在处理 1 条对话",
+            Check(bubble.IsVisible && TaskStatusBubbleWindow.Describe(sharedBehavior.GetTaskState()) == "Codex · 正在处理 1 条对话",
                 "a repeat poll cannot redraw a confirmed WorkBuddy completion line");
-            sharedBehavior.DisconnectTaskSource("synthetic-codex");
+            sharedBehavior.DisconnectTaskSource(LocalCodexTaskSource.SourceId);
             Report(LocalWorkBuddyTaskSource.SourceId, "workspace-fixture", "next", AgentTaskState.Failed);
             Check(bubble.IsVisible && TaskStatusBubbleWindow.Describe(sharedBehavior.GetTaskState()) ==
                 "WorkBuddy · 1 轮遇到问题\n点击角色确认",
@@ -283,14 +307,14 @@ public static class TaskStatusBubbleSelfTest
 
             var nextTurn = new BehaviorController(new LumiSettings());
             DateTimeOffset firstTurnAt = DateTimeOffset.UtcNow;
-            nextTurn.ObserveTaskCompletion(new ObservedCompletionEvent("synthetic", "same-chat", "first-turn",
+            nextTurn.ObserveTaskCompletion(new ObservedCompletionEvent(LocalCodexTaskSource.SourceId, "same-chat", "first-turn",
                 "first-completed", firstTurnAt));
             DateTimeOffset nextTurnAt = DateTimeOffset.UtcNow;
-            nextTurn.ObserveTaskState(new AgentTaskSnapshot("synthetic", "same-chat", AgentTaskState.Running,
+            nextTurn.ObserveTaskState(new AgentTaskSnapshot(LocalCodexTaskSource.SourceId, "same-chat", AgentTaskState.Running,
                 nextTurnAt, nextTurnAt.AddMinutes(5)), "next-running", turnId: "next-turn");
             bubble.SetTaskState(nextTurn.GetTaskState()); Pump();
             Check(bubble.IsVisible && bubble.Width == 178 && TaskStatusBubbleWindow.Describe(nextTurn.GetTaskState()) ==
-                "正在处理 1 条对话\n已完成 1 轮" && nextTurn.CurrentAnimation == AnimationId.Running,
+                "Codex · 正在处理 1 条对话\n已完成 1 轮" && nextTurn.CurrentAnimation == AnimationId.Running,
                 "Codex-only next-turn bubble restores its default width and preserves its previous completed round");
             SaveComposition(Path.Combine(directory, "bubble-same-chat-next-turn.png"), pet, bubble);
             renders.Add("bubble-same-chat-next-turn.png");
@@ -299,7 +323,7 @@ public static class TaskStatusBubbleSelfTest
             { Progress = ConversationProgress.FromStates([AgentTaskState.Completed, AgentTaskState.Unknown], currentBatch: true) };
             pet.SetVisual(AnimationId.Idle, null, "合成未决状态");
             bubble.SetTaskState(partialUnknown); Pump();
-            Check(bubble.IsVisible && TaskStatusBubbleWindow.Describe(partialUnknown) == "已完成 1 轮\n1 条状态待核",
+            Check(bubble.IsVisible && TaskStatusBubbleWindow.Describe(partialUnknown) == "Codex · 已完成 1 轮\n1 条状态待核",
                 "actual unresolved batch keeps completed count without offering to clear unfinished work");
             SaveComposition(Path.Combine(directory, "bubble-partial-unknown.png"), pet, bubble);
             renders.Add("bubble-partial-unknown.png");

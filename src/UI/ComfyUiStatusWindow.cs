@@ -1,5 +1,5 @@
-// Version: 0.3.15-preview | Generated: 2026-11-10 | Updated/coverage: 2026-11-13 (Asia/Shanghai)
-// Source: RAW | user ComfyUI panel and estimated time requests; LOCAL-WORK | Codex Desktop / Lumi / Codex
+// Version: 0.3.19-preview | Generated: 2026-11-10 | Updated/coverage: 2026-11-16 (Asia/Shanghai)
+// Source: RAW | user ComfyUI panel, estimated time, resizing and elevation; LOCAL-WORK | Codex Desktop / Lumi / Codex
 using System.ComponentModel;
 using System.Diagnostics;
 using System.Runtime.InteropServices;
@@ -20,8 +20,10 @@ namespace LumiCompanion.UI;
 public sealed class ComfyUiStatusWindow : Window
 {
     private const string ComfyUiAddress = "http://127.0.0.1:8188/";
+    private const double DefaultPanelWidth = 286;
     private readonly CompanionWindow _companion;
     private readonly CodexUsageBadgeWindow? _usageBadge;
+    private readonly TaskStatusBubbleWindow? _statusBubble;
     private readonly ComfyUiStatusService _statusService = new();
     private readonly ComfyUiProgressMonitor _progressMonitor = new();
     private readonly CancellationTokenSource _lifetime = new();
@@ -41,6 +43,7 @@ public sealed class ComfyUiStatusWindow : Window
         FontSize = 10, Foreground = UsageControlStyle.Muted, TextWrapping = TextWrapping.Wrap
     };
     private readonly ComfyUiPerimeterProgress _perimeterProgress = new() { IsHitTestVisible = false };
+    private readonly ScaleTransform _panelScale = new(1, 1);
     private readonly Controls.Button _modeButton;
     private readonly Controls.Button _returnButton;
     private ComfyUiPanelPlacement _placement;
@@ -50,19 +53,21 @@ public sealed class ComfyUiStatusWindow : Window
     private bool _shuttingDown;
     private bool _placing;
     private bool _dragging;
-    private bool _usageRepositionQueued;
+    private bool _dockRepositionQueued;
+    private int _elevation;
 
     public ComfyUiStatusWindow(CompanionWindow companion, ComfyUiPanelPlacement placement,
-        CodexUsageBadgeWindow? usageBadge = null)
+        CodexUsageBadgeWindow? usageBadge = null, TaskStatusBubbleWindow? statusBubble = null)
     {
         _companion = companion;
         _usageBadge = usageBadge;
+        _statusBubble = statusBubble;
         _placement = placement;
         if (!ValidPoint(placement.Left, placement.Top))
             _placement = placement with { Docked = true };
 
         Title = "Lumi · ComfyUI";
-        Width = 286;
+        Width = DefaultPanelWidth;
         SizeToContent = SizeToContent.Height;
         WindowStyle = WindowStyle.None;
         WindowStartupLocation = WindowStartupLocation.Manual;
@@ -115,7 +120,7 @@ public sealed class ComfyUiStatusWindow : Window
         link.Click += (_, _) => OpenTarget(ComfyUiAddress);
         address.Inlines.Add(link);
         panel.Children.Add(address);
-        var surface = new Controls.Grid { Background = UsageControlStyle.Surface };
+        var surface = new Controls.Grid { Background = UsageControlStyle.Surface, LayoutTransform = _panelScale };
         surface.Children.Add(new Controls.Border
         {
             BorderBrush = UsageControlStyle.Muted,
@@ -126,20 +131,30 @@ public sealed class ComfyUiStatusWindow : Window
         Content = surface;
 
         Loaded += OnLoaded;
-        SourceInitialized += (_, _) => Reposition();
-        SizeChanged += OnPlacementChanged;
+        SizeChanged += OnPanelSizeChanged;
         _companion.LocationChanged += OnPlacementChanged;
         _companion.SizeChanged += OnPlacementChanged;
         _companion.IsVisibleChanged += OnCompanionVisibilityChanged;
         if (_usageBadge is not null)
         {
-            ObserveUsagePlacement(_usageBadge, subscribe: true);
-            ObserveUsagePlacement(_usageBadge.DockWindow, subscribe: true);
+            ObserveDockObstacle(_usageBadge, subscribe: true);
+            ObserveDockObstacle(_usageBadge.DockWindow, subscribe: true);
         }
+        if (_statusBubble is not null) ObserveDockObstacle(_statusBubble, subscribe: true);
         Render();
     }
 
     public event Action<ComfyUiPanelPlacement>? PlacementChanged;
+
+    internal void ApplySettings(LumiSettings settings)
+    {
+        Topmost = settings.AlwaysOnTop;
+        double scale = settings.ComfyUiScalePercent / 100.0;
+        _panelScale.ScaleX = _panelScale.ScaleY = scale;
+        Width = DefaultPanelWidth * scale;
+        _elevation = settings.ComfyUiElevation;
+        Reposition();
+    }
 
     public void SyncVisibility() => SyncVisibility(reserveRightOnReturn: false);
 
@@ -152,7 +167,8 @@ public sealed class ComfyUiStatusWindow : Window
             return;
         }
 
-        if (!IsVisible) Show();
+        if (_placement.Docked) new WindowInteropHelper(this).EnsureHandle();
+        else if (!IsVisible) Show();
         Reposition(reserveRightOnReturn);
     }
 
@@ -182,9 +198,10 @@ public sealed class ComfyUiStatusWindow : Window
         _companion.IsVisibleChanged -= OnCompanionVisibilityChanged;
         if (_usageBadge is not null)
         {
-            ObserveUsagePlacement(_usageBadge, subscribe: false);
-            ObserveUsagePlacement(_usageBadge.DockWindow, subscribe: false);
+            ObserveDockObstacle(_usageBadge, subscribe: false);
+            ObserveDockObstacle(_usageBadge.DockWindow, subscribe: false);
         }
+        if (_statusBubble is not null) ObserveDockObstacle(_statusBubble, subscribe: false);
         _lifetime.Cancel();
         if (!_started) DisposeConnection();
         base.OnClosed(e);
@@ -201,35 +218,41 @@ public sealed class ComfyUiStatusWindow : Window
     private void OnCompanionVisibilityChanged(object sender, DependencyPropertyChangedEventArgs e) => SyncVisibility();
     private void OnPlacementChanged(object? sender, EventArgs e) => Reposition();
 
-    private void ObserveUsagePlacement(Window usage, bool subscribe)
+    private void OnPanelSizeChanged(object sender, SizeChangedEventArgs e)
+    {
+        if (_placement.Docked) QueueDockReposition();
+        else Reposition();
+    }
+
+    private void ObserveDockObstacle(Window window, bool subscribe)
     {
         if (subscribe)
         {
-            usage.LocationChanged += OnUsagePlacementChanged;
-            usage.SizeChanged += OnUsagePlacementChanged;
-            usage.IsVisibleChanged += OnUsageVisibilityChanged;
+            window.LocationChanged += OnObstaclePlacementChanged;
+            window.SizeChanged += OnObstaclePlacementChanged;
+            window.IsVisibleChanged += OnObstacleVisibilityChanged;
         }
         else
         {
-            usage.LocationChanged -= OnUsagePlacementChanged;
-            usage.SizeChanged -= OnUsagePlacementChanged;
-            usage.IsVisibleChanged -= OnUsageVisibilityChanged;
+            window.LocationChanged -= OnObstaclePlacementChanged;
+            window.SizeChanged -= OnObstaclePlacementChanged;
+            window.IsVisibleChanged -= OnObstacleVisibilityChanged;
         }
     }
 
-    private void OnUsagePlacementChanged(object? sender, EventArgs e) => QueueUsageReposition();
+    private void OnObstaclePlacementChanged(object? sender, EventArgs e) => QueueDockReposition();
 
-    private void OnUsageVisibilityChanged(object sender, DependencyPropertyChangedEventArgs e) => QueueUsageReposition();
+    private void OnObstacleVisibilityChanged(object sender, DependencyPropertyChangedEventArgs e) => QueueDockReposition();
 
-    private void QueueUsageReposition()
+    private void QueueDockReposition()
     {
-        if (!_placement.Docked || _usageRepositionQueued || _shuttingDown) return;
-        _usageRepositionQueued = true;
+        if (!_placement.Docked || _dockRepositionQueued || _shuttingDown) return;
+        _dockRepositionQueued = true;
         Dispatcher.InvokeAsync(() =>
         {
-            _usageRepositionQueued = false;
+            _dockRepositionQueued = false;
             if (_placement.Docked) Reposition();
-        }, DispatcherPriority.Loaded);
+        }, DispatcherPriority.Background);
     }
 
     private void OnDragHeader(object sender, MouseButtonEventArgs e)
@@ -252,32 +275,38 @@ public sealed class ComfyUiStatusWindow : Window
         if (_placing || _dragging || _shuttingDown || _placement.Hidden || !_companion.IsVisible) return;
         var handle = new WindowInteropHelper(this).Handle;
         var petHandle = _companion.HwndSource?.Handle ?? IntPtr.Zero;
-        if (handle == IntPtr.Zero || petHandle == IntPtr.Zero ||
-            !NativeMethods.GetWindowRect(petHandle, out var pet)) return;
+        if (handle == IntPtr.Zero || petHandle == IntPtr.Zero) return;
+        CompanionPanelLayout layout = default;
+        if (_placement.Docked && !_companion.TryGetPanelLayout(out layout)) return;
 
         _placing = true;
         try
         {
-            DpiScale dpi = VisualTreeHelper.GetDpi(this);
+            DpiScale dpi = _placement.Docked ? layout.Dpi : VisualTreeHelper.GetDpi(this);
             int width = (int)Math.Ceiling(Width * dpi.DpiScaleX);
-            int height = (int)Math.Ceiling(Math.Max(ActualHeight, 140) * dpi.DpiScaleY);
+            int height = (int)Math.Ceiling(Math.Max(ActualHeight, 140 * _panelScale.ScaleY) * dpi.DpiScaleY);
             const uint flags = NativeMethods.SWP_NOSIZE | NativeMethods.SWP_NOZORDER | NativeMethods.SWP_NOACTIVATE;
             if (_placement.Docked)
             {
-                var screen = Forms.Screen.FromHandle(petHandle).WorkingArea;
-                var workArea = new Rect(screen.Left, screen.Top, screen.Width, screen.Height);
-                var petArea = new Rect(pet.Left, pet.Top, pet.Width, pet.Height);
+                Rect petArea = layout.Canvas;
                 var panelSize = new System.Windows.Size(width, height);
                 if (reserveRightOnReturn)
                 {
-                    double petLeft = UsageDockLayout.FitPetBesideComfyUi(petArea, workArea, panelSize);
+                    double petLeft = UsageDockLayout.FitPetBesideComfyUi(petArea, layout.WorkArea, panelSize);
                     if (petLeft < petArea.Left &&
-                        NativeMethods.SetWindowPos(petHandle, IntPtr.Zero, (int)petLeft, pet.Top, 0, 0, flags))
+                        NativeMethods.SetWindowPos(petHandle, IntPtr.Zero, (int)petLeft, (int)petArea.Top, 0, 0, flags))
                         petArea.X = petLeft;
                 }
 
-                Rect dock = UsageDockLayout.FindComfyUiPanel(petArea, workArea, panelSize, VisibleUsageBounds());
+                Rect? placement = UsageDockLayout.FindComfyUiPanel(petArea, layout.WorkArea, panelSize,
+                    VisibleUsageBounds(), VisibleBounds(_statusBubble), _elevation * dpi.DpiScaleY);
+                if (placement is not { } dock)
+                {
+                    if (IsVisible) Hide();
+                    return;
+                }
                 NativeMethods.SetWindowPos(handle, IntPtr.Zero, (int)Math.Round(dock.Left), (int)Math.Round(dock.Top), 0, 0, flags);
+                if (!IsVisible) Show();
                 return;
             }
 
@@ -294,9 +323,13 @@ public sealed class ComfyUiStatusWindow : Window
     private Rect? VisibleUsageBounds()
     {
         if (_usageBadge is null) return null;
-        Window usage = _usageBadge.IsExpanded ? _usageBadge : _usageBadge.DockWindow;
-        if (!usage.IsVisible ||
-            !NativeMethods.GetWindowRect(new WindowInteropHelper(usage).Handle, out var bounds)) return null;
+        return VisibleBounds(_usageBadge) ?? VisibleBounds(_usageBadge.DockWindow);
+    }
+
+    private static Rect? VisibleBounds(Window? window)
+    {
+        if (window is not { IsVisible: true } ||
+            !NativeMethods.GetWindowRect(new WindowInteropHelper(window).Handle, out var bounds)) return null;
         return new Rect(bounds.Left, bounds.Top, bounds.Width, bounds.Height);
     }
 

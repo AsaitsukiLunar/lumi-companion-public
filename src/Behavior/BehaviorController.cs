@@ -1,10 +1,10 @@
 /*
 Traceability metadata
-Version: 0.3.14-preview
+Version: 0.3.21-preview
 Generated: 2026-07-25 (Asia/Shanghai)
-Last updated: 2026-11-11
-Content coverage through: 2026-11-11
-Source type: RAW | user WorkBuddy integration and shared confirmation rules; LOCAL-WORK | Lumi behavior arbitration
+Last updated: 2026-11-17
+Content coverage through: 2026-11-17
+Source type: RAW | user agent separation and shared confirmation rules; LOCAL-WORK | Lumi behavior arbitration
 Source: Codex Desktop / workspace new-chat / current Lumi independent companion task / Codex
 Organizing node: Windows / Codex Desktop / WorkBuddy snapshot behavior subtask
 Original sources: existing Lumi task behavior and WorkBuddy bridge handoff V1.0
@@ -29,6 +29,7 @@ public sealed class VisualStateChangedEventArgs : EventArgs
 
 public sealed class BehaviorController
 {
+    private static readonly ConversationProgress EmptyBatch = ConversationProgress.FromStates([], currentBatch: true);
     private readonly Dictionary<string, DateTimeOffset> _cooldowns = new(StringComparer.OrdinalIgnoreCase);
     private readonly TimeProvider _timeProvider;
     private LumiSettings _settings;
@@ -476,20 +477,29 @@ public sealed class BehaviorController
                 TaskId = displayed.TaskId + "\u001f" + task.Fingerprint.Version };
             effective.Observe(displayed, now);
         }
+        string[] sources = _conversationBatch.Keys.Select(key => key.Source)
+            .Concat(_terminalResults.Keys.Select(key => key.Source))
+            .Distinct(StringComparer.Ordinal).ToArray();
+        var progressBySource = new Dictionary<string, ConversationProgress>(StringComparer.Ordinal);
+        foreach (string source in sources)
+        {
+            ConversationProgress progress = ReadConversationProgress(now, source);
+            if (progress.TotalCount > 0) progressBySource.Add(source, progress);
+        }
         return effective.Read(now) with
         {
-            Progress = ReadConversationProgress(now, workBuddy: false),
-            WorkBuddyProgress = ReadConversationProgress(now, workBuddy: true)
+            ProgressBySource = progressBySource,
+            Progress = progressBySource.GetValueOrDefault(LocalCodexTaskSource.SourceId, EmptyBatch),
+            WorkBuddyProgress = progressBySource.GetValueOrDefault(LocalWorkBuddyTaskSource.SourceId, EmptyBatch)
         };
     }
 
-    private ConversationProgress ReadConversationProgress(DateTimeOffset now, bool workBuddy)
+    private ConversationProgress ReadConversationProgress(DateTimeOffset now, string source)
     {
-        bool InBatch(string source) => (source == LocalWorkBuddyTaskSource.SourceId) == workBuddy;
         // Explicit terminal evidence remains a count while other chats in this batch continue.
         // Losing a running lease is unknown, never evidence of completion.
-        var conversations = _conversationBatch.Values.Where(task => InBatch(task.Source));
-        var terminals = _terminalResults.Values.Where(task => InBatch(task.Snapshot.Source));
+        var conversations = _conversationBatch.Values.Where(task => task.Source == source);
+        var terminals = _terminalResults.Values.Where(task => task.Snapshot.Source == source);
         ConversationProgress progress = ConversationProgress.FromStates(
             conversations.Select(task =>
                 task.ExpiresAt <= now && !IsTerminal(task.State) && task.State != AgentTaskState.Idle
@@ -501,11 +511,11 @@ public sealed class BehaviorController
         {
             // This also closes the late-delivery race: a quiet old completion cannot use
             // the count summary to bring back a notification already acknowledged by P1.
-            foreach (var key in _conversationBatch.Keys.Where(key => InBatch(key.Source)).ToArray())
+            foreach (var key in _conversationBatch.Keys.Where(key => key.Source == source).ToArray())
                 _conversationBatch.Remove(key);
-            foreach (var key in _terminalResults.Keys.Where(key => InBatch(key.Source)).ToArray())
+            foreach (var key in _terminalResults.Keys.Where(key => key.Source == source).ToArray())
                 _terminalResults.Remove(key);
-            return ConversationProgress.FromStates([], currentBatch: true);
+            return EmptyBatch;
         }
         return progress;
     }

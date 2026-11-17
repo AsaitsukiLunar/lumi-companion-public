@@ -1,9 +1,9 @@
 <!--
 Traceability metadata
-Version: 0.3.16-beta.1
+Version: 0.3.22-beta.1
 Generated: 2026-07-25 (Asia/Shanghai)
-Last updated: 2026-11-13
-Content coverage through: 2026-11-13
+Last updated: 2026-11-17
+Content coverage through: 2026-11-17
 Source type: LOCAL-WORK
 Source: Codex Desktop / workspace new-chat / current Lumi independent companion task / Codex
 -->
@@ -20,9 +20,7 @@ Source: Codex Desktop / workspace new-chat / current Lumi independent companion 
     <ApplicationIcon>assets\lumi.ico</ApplicationIcon>
     <AssemblyName>LumiCompanion</AssemblyName>
     <RootNamespace>LumiCompanion</RootNamespace>
-    <Version>0.3.16-beta.1</Version>
-    <FileVersion>0.3.16.0</FileVersion>
-    <AssemblyVersion>0.3.16.0</AssemblyVersion>
+    <Version>0.3.22-beta.1</Version>
     <Company>Lumi</Company>
     <Product>Lumi for Codex</Product>
     <Description>Offline-first independent Lumi desktop companion for Windows.</Description>

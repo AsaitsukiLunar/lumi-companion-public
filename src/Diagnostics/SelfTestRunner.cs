@@ -1,9 +1,9 @@
 /*
 Traceability metadata
-Version: 0.2.0
+Version: 0.3.19-preview
 Generated: 2026-07-25 (Asia/Shanghai)
-Last updated: 2026-07-25
-Content coverage through: 2026-07-25
+Last updated: 2026-11-16
+Content coverage through: 2026-11-16
 Source type: LOCAL-WORK
 Source: Codex Desktop / workspace new-chat / current Lumi independent companion task / Codex
 */
@@ -48,6 +48,27 @@ public static class SelfTestRunner
             LumiPersistentState state = storage.LoadState();
             report.Checks["settingsRoundTrip"] = File.Exists(storage.SettingsPath) && settings.PetWidth == 192;
             report.Checks["stateRoundTrip"] = File.Exists(storage.StatePath) && state.Mood is >= 0 and <= 100;
+
+            File.WriteAllText(storage.SettingsPath, """{"schemaVersion":3,"petWidth":244,"showCodexUsage":true}""");
+            LumiSettings legacySettings = storage.LoadSettings();
+            bool legacyPanelDefaults = legacySettings.PetWidth == 244 && legacySettings.ShowCodexUsage &&
+                legacySettings.TaskBubbleScalePercent == 100 && legacySettings.TaskBubbleElevation == 0 &&
+                legacySettings.CodexUsageScalePercent == 100 && legacySettings.CodexUsageElevation == 0 &&
+                legacySettings.ComfyUiScalePercent == 100 && legacySettings.ComfyUiElevation == 0;
+            legacySettings.TaskBubbleScalePercent = 85;
+            legacySettings.TaskBubbleElevation = 25;
+            legacySettings.CodexUsageScalePercent = 120;
+            legacySettings.CodexUsageElevation = -47;
+            legacySettings.ComfyUiScalePercent = 140;
+            legacySettings.ComfyUiElevation = 68;
+            storage.SaveSettings(legacySettings);
+            LumiSettings reloadedSettings = storage.LoadSettings();
+            bool panelSettingsRoundTrip = reloadedSettings.PetWidth == 244 && reloadedSettings.ShowCodexUsage &&
+                reloadedSettings.TaskBubbleScalePercent == 85 && reloadedSettings.TaskBubbleElevation == 25 &&
+                reloadedSettings.CodexUsageScalePercent == 120 && reloadedSettings.CodexUsageElevation == -47 &&
+                reloadedSettings.ComfyUiScalePercent == 140 && reloadedSettings.ComfyUiElevation == 68;
+            report.Checks["legacyPanelDefaults"] = legacyPanelDefaults;
+            report.Checks["panelSettingsRoundTrip"] = panelSettingsRoundTrip;
 
             bool codexPackageMatcher = CodexWindowTargetMatcher.IsMatch(
                 "ChatGPT",
@@ -102,6 +123,8 @@ public static class SelfTestRunner
                         storageProfile &&
                         File.Exists(storage.SettingsPath) &&
                         File.Exists(storage.StatePath) &&
+                        legacyPanelDefaults &&
+                        panelSettingsRoundTrip &&
                         audioLifecycle &&
                         codexPackageMatcher &&
                         codexPathMatcher &&

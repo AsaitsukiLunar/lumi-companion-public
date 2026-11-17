@@ -1,18 +1,17 @@
 /*
-Version: 0.3.14-preview
-Generated: 2026-10-30; updated / coverage: 2026-11-11 (Asia/Shanghai)
-Source type: RAW (user task bubble and shared confirmation rules); LOCAL-WORK (implementation); LOCAL-AGENT (WorkBuddy state bridge handoff V1.0).
-Source: Codex Desktop / 云端本地互通文件夹 / current Lumi conversation (title unverified) / usage_tabs baseline; workbuddy_verify conversation-count increment
+Version: 0.3.21-preview
+Generated: 2026-10-30; updated / coverage: 2026-11-17 (Asia/Shanghai)
+Source type: RAW (user task bubble and separate Agent source requirements); LOCAL-WORK (implementation); LOCAL-AGENT (WorkBuddy state bridge handoff V1.0).
+Source: Lumi Companion / Codex
 Organizing node: Windows / Codex Desktop / Codex
 Original sources: current user requirement; existing account-scoped effective task state and sprite body mask.
 */
-using System.Runtime.InteropServices;
 using System.Windows;
 using System.Windows.Interop;
 using System.Windows.Media;
 using System.Windows.Threading;
-using LumiCompanion.Animation;
 using LumiCompanion.Integration;
+using LumiCompanion.Models;
 using LumiCompanion.Native;
 using Controls = System.Windows.Controls;
 using MediaColor = System.Windows.Media.Color;
@@ -24,21 +23,20 @@ public sealed class TaskStatusBubbleWindow : Window, IDisposable
 {
     internal const long NoActivateStyle = 0x08000000L;
     private const double DefaultWidth = 178;
-    private const double MaxWorkBuddyWidth = 216;
+    private const double MaxBubbleWidth = 216;
     private readonly CompanionWindow _companion;
-    private readonly CodexUsageBadgeWindow? _usageBadge;
     private readonly Controls.TextBlock _label;
     private readonly DispatcherTimer _placementTimer;
-    private readonly Dictionary<SpriteHitMask, Rect> _bodyBounds = new();
+    private readonly ScaleTransform _scale = new();
     private string? _message;
+    private double _elevation;
     private bool _disposed;
     private bool _allowClose;
     private IntPtr _handle;
 
-    public TaskStatusBubbleWindow(CompanionWindow companion, CodexUsageBadgeWindow? usageBadge = null)
+    public TaskStatusBubbleWindow(CompanionWindow companion)
     {
         _companion = companion;
-        _usageBadge = usageBadge;
         Owner = companion;
         Title = "Lumi · 当前状态";
         Width = DefaultWidth;
@@ -63,7 +61,8 @@ public sealed class TaskStatusBubbleWindow : Window, IDisposable
         {
             Background = new SolidColorBrush(MediaColor.FromArgb(235, 25, 29, 43)),
             BorderBrush = new SolidColorBrush(MediaColor.FromArgb(220, 108, 224, 255)),
-            BorderThickness = new Thickness(1), CornerRadius = new CornerRadius(12), Child = _label
+            BorderThickness = new Thickness(1), CornerRadius = new CornerRadius(12), Child = _label,
+            LayoutTransform = _scale
         };
         _placementTimer = new DispatcherTimer(DispatcherPriority.Background) { Interval = TimeSpan.FromMilliseconds(100) };
         _placementTimer.Tick += OnPlacementTimer;
@@ -72,12 +71,6 @@ public sealed class TaskStatusBubbleWindow : Window, IDisposable
         _companion.LocationChanged += OnCompanionPlacementChanged;
         _companion.SizeChanged += OnCompanionPlacementChanged;
         _companion.IsVisibleChanged += OnCompanionVisibilityChanged;
-        if (_usageBadge is not null)
-        {
-            _usageBadge.LocationChanged += OnCompanionPlacementChanged;
-            _usageBadge.SizeChanged += OnCompanionPlacementChanged;
-            _usageBadge.IsVisibleChanged += OnCompanionVisibilityChanged;
-        }
     }
 
     public void SetTaskState(AggregateTaskState state)
@@ -88,37 +81,70 @@ public sealed class TaskStatusBubbleWindow : Window, IDisposable
         {
             _message = next;
             _label.Text = next ?? string.Empty;
-            if (state.WorkBuddyProgress is not { TotalCount: > 0 })
-            {
-                Width = DefaultWidth;
-            }
-            else
-            {
-                _label.Measure(new System.Windows.Size(double.PositiveInfinity, double.PositiveInfinity));
-                Width = Math.Clamp(Math.Ceiling(_label.DesiredSize.Width) + 2, DefaultWidth, MaxWorkBuddyWidth);
-            }
-            _label.Measure(new System.Windows.Size(Width - 2, double.PositiveInfinity));
-            Height = Math.Max(30, Math.Ceiling(_label.DesiredSize.Height) + 2);
+            UpdateBubbleSize();
         }
         SyncVisibility();
     }
 
+    internal void ApplySettings(LumiSettings settings)
+    {
+        if (_disposed) return;
+        _scale.ScaleX = _scale.ScaleY = Math.Clamp(settings.TaskBubbleScalePercent,
+            LumiSettings.PanelScaleMinimumPercent, LumiSettings.PanelScaleMaximumPercent) / 100d;
+        _elevation = Math.Clamp(settings.TaskBubbleElevation, -LumiSettings.PanelElevationLimit, LumiSettings.PanelElevationLimit);
+        UpdateBubbleSize();
+        SyncVisibility();
+    }
+
+    private void UpdateBubbleSize()
+    {
+        _label.Measure(new System.Windows.Size(double.PositiveInfinity, double.PositiveInfinity));
+        double width = Math.Clamp(Math.Ceiling(_label.DesiredSize.Width) + 2, DefaultWidth, MaxBubbleWidth);
+        _label.Measure(new System.Windows.Size(width - 2, double.PositiveInfinity));
+        double height = Math.Max(30, Math.Ceiling(_label.DesiredSize.Height) + 2);
+        Width = Math.Ceiling(width * _scale.ScaleX);
+        Height = Math.Ceiling(height * _scale.ScaleY);
+    }
+
     internal static string? Describe(AggregateTaskState state)
     {
+        var lines = new List<string>();
+        bool confirm = false;
+        foreach (var (source, progress) in SourceProgress(state).OrderBy(entry => entry.Key switch
+        {
+            LocalCodexTaskSource.SourceId => 0,
+            LocalWorkBuddyTaskSource.SourceId => 1,
+            _ => 2
+        }).ThenBy(entry => entry.Key, StringComparer.Ordinal))
+        {
+            string? description = DescribeProgress(progress, out bool confirmSource);
+            if (description is null) continue;
+            string label = source switch
+            {
+                LocalCodexTaskSource.SourceId => "Codex",
+                LocalWorkBuddyTaskSource.SourceId => "WorkBuddy",
+                _ => source
+            };
+            lines.Add($"{label} · {description}");
+            confirm |= confirmSource;
+        }
+        if (confirm) lines.Add("点击角色确认");
+        return lines.Count == 0 ? null : string.Join("\n", lines);
+    }
+
+    private static IEnumerable<KeyValuePair<string, ConversationProgress>> SourceProgress(AggregateTaskState state)
+    {
+        if (state.ProgressBySource is { } sources) return sources;
+
         ConversationProgress progress = state.Progress ?? new ConversationProgress(Math.Max(1, state.KnownCount),
             state.State == AgentTaskState.Running ? Math.Max(1, state.RunningCount) : state.RunningCount,
             state.State == AgentTaskState.Review ? 1 : 0, state.State == AgentTaskState.Completed ? 1 : 0,
             state.State == AgentTaskState.Waiting ? Math.Max(1, state.WaitingCount) : state.WaitingCount,
             state.State == AgentTaskState.Failed ? 1 : 0, state.State == AgentTaskState.Unknown ? 1 : 0,
             state.State == AgentTaskState.Idle ? 1 : 0);
-        string? codex = DescribeProgress(progress, out bool confirmCodex);
-        bool confirmWorkBuddy = false;
-        string? workBuddy = state.WorkBuddyProgress is { } sourceProgress
-            ? DescribeProgress(sourceProgress, out confirmWorkBuddy) : null;
-        string? text = workBuddy is null ? codex
-            : codex is null ? $"WorkBuddy · {workBuddy}"
-            : $"Codex · {codex}\nWorkBuddy · {workBuddy}";
-        return confirmCodex || confirmWorkBuddy ? text + "\n点击角色确认" : text;
+        if (state.WorkBuddyProgress is { } workBuddy)
+            return [new(LocalCodexTaskSource.SourceId, progress), new(LocalWorkBuddyTaskSource.SourceId, workBuddy)];
+        return [new(LocalCodexTaskSource.SourceId, progress)];
     }
 
     private static string? DescribeProgress(ConversationProgress progress, out bool confirm)
@@ -152,46 +178,35 @@ public sealed class TaskStatusBubbleWindow : Window, IDisposable
     private static string CompletedText(int count) => $"已完成 {count} 轮";
     private static string FailedText(int count) => $"{count} 轮遇到问题";
 
-    internal static Rect FindBodyBounds(SpriteHitMask mask)
-    {
-        int left = mask.Width, top = mask.Height, right = -1, bottom = -1;
-        for (int y = 0; y < mask.Height; y++)
-            for (int x = 0; x < mask.Width; x++)
-                if (mask.GetPart(x, y) == SpriteHitPart.Body)
-                {
-                    left = Math.Min(left, x); top = Math.Min(top, y);
-                    right = Math.Max(right, x); bottom = Math.Max(bottom, y);
-                }
-        return right < left ? Rect.Empty : new Rect(left, top, right - left + 1, bottom - top + 1);
-    }
-
     /// <summary>All values are physical screen pixels; never clamp a bubble into the character.</summary>
-    internal static Rect? PlanPlacement(Rect body, Rect workArea, System.Windows.Size bubble, Rect? badge)
+    internal static Rect? PlanPlacement(Point head, Rect canvas, Rect workArea, System.Windows.Size bubble, double elevation = 0)
     {
-        if (body.IsEmpty || bubble.Width <= 0 || bubble.Height <= 0 ||
+        if (canvas.IsEmpty || bubble.Width <= 0 || bubble.Height <= 0 ||
             bubble.Width > workArea.Width || bubble.Height > workArea.Height) return null;
         const double gap = 8;
-        double centered = body.Left + (body.Width - bubble.Width) / 2;
-        var candidates = new List<Point>
+        double centered = head.X - bubble.Width / 2;
+        (Point Anchor, bool Above)[] candidates =
+        [
+            (new Point(centered, head.Y - bubble.Height - gap), true),
+            (new Point(centered, canvas.Bottom + gap), false),
+            (new Point(canvas.Right + gap, head.Y), false),
+            (new Point(canvas.Left - bubble.Width - gap, head.Y), false)
+        ];
+
+        return Fit(elevation) ?? (elevation == 0 ? null : Fit(0));
+
+        Rect? Fit(double offset)
         {
-            new Point(centered, body.Top - bubble.Height - gap),
-            new Point(body.Right + gap, body.Top),
-            new Point(body.Left - bubble.Width - gap, body.Top)
-        };
-        if (badge is { } card)
-        {
-            candidates.Add(new Point(Math.Max(body.Right, card.Right) + gap, body.Top));
-            candidates.Add(new Point(Math.Min(body.Left, card.Left) - bubble.Width - gap, body.Top));
+            foreach ((Point anchor, bool above) in candidates)
+            {
+                var placed = new Rect(
+                    Math.Clamp(anchor.X, workArea.Left, workArea.Right - bubble.Width),
+                    Math.Clamp(anchor.Y - offset, workArea.Top, workArea.Bottom - bubble.Height), bubble.Width, bubble.Height);
+                if (above ? placed.Bottom >= head.Y : placed.IntersectsWith(canvas)) continue;
+                return placed;
+            }
+            return null;
         }
-        foreach (Point candidate in candidates)
-        {
-            var placed = new Rect(
-                Math.Clamp(candidate.X, workArea.Left, workArea.Right - bubble.Width),
-                Math.Clamp(candidate.Y, workArea.Top, workArea.Bottom - bubble.Height), bubble.Width, bubble.Height);
-            if (placed.IntersectsWith(body) || (badge is { } occupied && placed.IntersectsWith(occupied))) continue;
-            return placed;
-        }
-        return null;
     }
 
     private void OnSourceInitialized(object? sender, EventArgs e)
@@ -225,33 +240,15 @@ public sealed class TaskStatusBubbleWindow : Window, IDisposable
 
     private bool PlaceBubble()
     {
-        SpriteHitMask? mask = _companion.CurrentHitMask;
-        IntPtr companionHandle = _companion.HwndSource?.Handle ?? IntPtr.Zero;
-        if (mask is null || companionHandle == IntPtr.Zero || _handle == IntPtr.Zero ||
-            !NativeMethods.GetWindowRect(companionHandle, out var pet) ||
+        if (_handle == IntPtr.Zero || !_companion.TryGetPanelLayout(out var layout) ||
             !NativeMethods.GetWindowRect(_handle, out var bubble)) return false;
-        if (!_bodyBounds.TryGetValue(mask, out Rect bodyBounds))
-        {
-            bodyBounds = FindBodyBounds(mask);
-            _bodyBounds[mask] = bodyBounds;
-        }
-        if (bodyBounds.IsEmpty) return false;
-        double scale = Math.Min(pet.Width / (double)mask.Width, pet.Height / (double)mask.Height);
-        var body = new Rect(pet.Left + (pet.Width - mask.Width * scale) / 2 + bodyBounds.Left * scale,
-            pet.Top + (pet.Height - mask.Height * scale) / 2 + bodyBounds.Top * scale,
-            bodyBounds.Width * scale, bodyBounds.Height * scale);
-        IntPtr monitor = NativeMethods.MonitorFromWindow(companionHandle, NativeMethods.MONITOR_DEFAULTTONEAREST);
-        var info = new NativeMethods.MONITORINFO { cbSize = (uint)Marshal.SizeOf<NativeMethods.MONITORINFO>() };
-        if (!NativeMethods.GetMonitorInfo(monitor, ref info)) return false;
-        var work = new Rect(info.rcWork.Left, info.rcWork.Top, info.rcWork.Width, info.rcWork.Height);
-        Rect? badge = null;
-        if (_usageBadge is { IsVisible: true } && NativeMethods.GetWindowRect(new WindowInteropHelper(_usageBadge).Handle, out var badgeRect))
-            badge = new Rect(badgeRect.Left, badgeRect.Top, badgeRect.Width, badgeRect.Height);
-        Rect? placement = PlanPlacement(body, work, new System.Windows.Size(bubble.Width, bubble.Height), badge);
+        double elevation = _elevation * layout.Dpi.DpiScaleY;
+        Rect? placement = PlanPlacement(layout.HeadAnchor, layout.Canvas, layout.WorkArea,
+            new System.Windows.Size(bubble.Width, bubble.Height), elevation);
         if (placement is not { } chosen) return false;
-        NativeMethods.SetWindowPos(_handle, IntPtr.Zero, (int)Math.Round(chosen.Left), (int)Math.Round(chosen.Top), 0, 0,
+        int left = (int)Math.Round(chosen.Left), top = (int)Math.Round(chosen.Top);
+        return (bubble.Left == left && bubble.Top == top) || NativeMethods.SetWindowPos(_handle, IntPtr.Zero, left, top, 0, 0,
             NativeMethods.SWP_NOSIZE | NativeMethods.SWP_NOZORDER | NativeMethods.SWP_NOACTIVATE);
-        return true;
     }
 
     private void OnPlacementTimer(object? sender, EventArgs e) => SyncVisibility();
@@ -275,12 +272,6 @@ public sealed class TaskStatusBubbleWindow : Window, IDisposable
         _companion.LocationChanged -= OnCompanionPlacementChanged;
         _companion.SizeChanged -= OnCompanionPlacementChanged;
         _companion.IsVisibleChanged -= OnCompanionVisibilityChanged;
-        if (_usageBadge is not null)
-        {
-            _usageBadge.LocationChanged -= OnCompanionPlacementChanged;
-            _usageBadge.SizeChanged -= OnCompanionPlacementChanged;
-            _usageBadge.IsVisibleChanged -= OnCompanionVisibilityChanged;
-        }
         SourceInitialized -= OnSourceInitialized;
         Closing -= OnClosing;
         _allowClose = true;

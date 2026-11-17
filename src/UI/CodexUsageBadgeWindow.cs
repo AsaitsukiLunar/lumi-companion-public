@@ -1,13 +1,13 @@
 /*
 Traceability metadata
-Version: 0.3.14-preview
+Version: 0.3.19-preview
 Generated: 2026-10-02 (Asia/Shanghai)
-Last updated: 2026-11-11
-Content coverage through: 2026-11-11
+Last updated: 2026-11-16
+Content coverage through: 2026-11-16
 Source type: RAW (user multi-provider tab and quota reset time requests); LOCAL-WORK (implementation and local quota model)
-Source: Codex Desktop / 云端本地互通文件夹 / current Lumi conversation (title unverified) / Codex
+Source: Lumi Companion / Codex
 Organizing node: Windows / Codex Desktop / Codex
-Original sources: existing Lumi side card; user numeric tabs, configurable dashboard links, and collapsible display requirements.
+Original sources: Lumi side card and user requirements for tabs, collapsible display, resizing and elevation.
 */
 using System.Diagnostics;
 using System.Windows;
@@ -15,7 +15,6 @@ using System.Windows.Interop;
 using System.Windows.Media;
 using System.Windows.Media.Animation;
 using System.Windows.Threading;
-using System.Runtime.InteropServices;
 using LumiCompanion.Infrastructure;
 using LumiCompanion.Models;
 using LumiCompanion.Native;
@@ -27,12 +26,15 @@ namespace LumiCompanion.UI;
 
 public sealed class CodexUsageBadgeWindow : Window, IDisposable
 {
+    private const double DefaultCardWidth = 224;
     private const double DefaultCardHeight = 184;
     private const double CardHeightWithResetTimes = 214;
     private readonly CompanionWindow _companion;
     private readonly UsageDockButtonWindow _dock;
     private Window? _statusBubble;
     private readonly ScaleTransform _popoverScale = new(1, 1);
+    private readonly ScaleTransform _cardScale = new(1, 1);
+    private int _elevation;
     private int _animationToken;
     private bool _placing;
     private bool _companionPlacementQueued;
@@ -70,7 +72,7 @@ public sealed class CodexUsageBadgeWindow : Window, IDisposable
         _tabs = _tabsStore.Load(out _configurationProblem);
         Title = "Lumi · 用量标签";
         Owner = companion;
-        Width = 224;
+        Width = DefaultCardWidth;
         Height = DefaultCardHeight;
         WindowStyle = WindowStyle.None;
         ResizeMode = ResizeMode.NoResize;
@@ -174,7 +176,8 @@ public sealed class CodexUsageBadgeWindow : Window, IDisposable
             CornerRadius = new CornerRadius(15),
             Background = UsageControlStyle.Surface,
             BorderBrush = UsageControlStyle.Edge,
-            BorderThickness = new Thickness(1)
+            BorderThickness = new Thickness(1),
+            LayoutTransform = _cardScale
         };
         ((FrameworkElement)Content).RenderTransform = _popoverScale;
         ((FrameworkElement)Content).RenderTransformOrigin = new Point(.5, 0);
@@ -192,6 +195,11 @@ public sealed class CodexUsageBadgeWindow : Window, IDisposable
     {
         _enabled = settings.ShowCodexUsage;
         _showResetTimes = settings.ShowCodexUsageResetTimes;
+        double scale = settings.CodexUsageScalePercent / 100.0;
+        _cardScale.ScaleX = _cardScale.ScaleY = scale;
+        Width = DefaultCardWidth * scale;
+        _dock.SetLayoutScale(scale);
+        _elevation = settings.CodexUsageElevation;
         if (!_enabled) _collapsed = true;
         Topmost = settings.AlwaysOnTop;
         SyncVisibility();
@@ -209,7 +217,15 @@ public sealed class CodexUsageBadgeWindow : Window, IDisposable
     public bool IsExpanded => !_collapsed;
     public event Action<bool>? ModuleVisibilityRequested;
     internal Window DockWindow => _dock;
-    public void SetStatusBubble(Window bubble) { _statusBubble = bubble; SyncVisibility(); }
+    public void SetStatusBubble(Window bubble)
+    {
+        StopObservingStatusBubble();
+        _statusBubble = bubble;
+        bubble.LocationChanged += OnStatusBubblePlacementChanged;
+        bubble.SizeChanged += OnStatusBubblePlacementChanged;
+        bubble.IsVisibleChanged += OnStatusBubbleVisibilityChanged;
+        SyncVisibility();
+    }
     public void SetExpanded(bool expanded) => SetCollapsed(!expanded);
 
     public bool ContainsScreenPoint(Point screenPoint)
@@ -261,7 +277,7 @@ public sealed class CodexUsageBadgeWindow : Window, IDisposable
         _webBody.Visibility = tab.IsCodex ? Visibility.Collapsed : Visibility.Visible;
         bool showResetTimes = tab.IsCodex && _showResetTimes;
         _resetTimes.Visibility = showResetTimes ? Visibility.Visible : Visibility.Collapsed;
-        Height = showResetTimes ? CardHeightWithResetTimes : DefaultCardHeight;
+        Height = (showResetTimes ? CardHeightWithResetTimes : DefaultCardHeight) * _cardScale.ScaleY;
         string compactSummary;
         if (tab.IsCodex)
         {
@@ -463,6 +479,15 @@ public sealed class CodexUsageBadgeWindow : Window, IDisposable
             return;
         }
 
+        QueueCompanionPlacement();
+    }
+
+    private void OnStatusBubblePlacementChanged(object? sender, EventArgs e) => QueueCompanionPlacement();
+
+    private void OnStatusBubbleVisibilityChanged(object sender, DependencyPropertyChangedEventArgs e) => QueueCompanionPlacement();
+
+    private void QueueCompanionPlacement()
+    {
         // The bubble also follows Lumi. Let it move before using its bounds to place the card.
         if (_companionPlacementQueued) return;
         _companionPlacementQueued = true;
@@ -471,6 +496,14 @@ public sealed class CodexUsageBadgeWindow : Window, IDisposable
             _companionPlacementQueued = false;
             if (!_allowClose) SyncVisibility();
         }, DispatcherPriority.Loaded);
+    }
+
+    private void StopObservingStatusBubble()
+    {
+        if (_statusBubble is not { } bubble) return;
+        bubble.LocationChanged -= OnStatusBubblePlacementChanged;
+        bubble.SizeChanged -= OnStatusBubblePlacementChanged;
+        bubble.IsVisibleChanged -= OnStatusBubbleVisibilityChanged;
     }
 
     private void OnCompanionVisibilityChanged(object sender, DependencyPropertyChangedEventArgs e) => SyncVisibility();
@@ -502,22 +535,18 @@ public sealed class CodexUsageBadgeWindow : Window, IDisposable
 
     private bool PlaceBesideCompanion()
     {
-        if (_placing || _companion.HwndSource is null) return false;
+        if (_placing || !_companion.TryGetPanelLayout(out var layout)) return false;
         _placing = true;
         try
         {
-            IntPtr petHandle = _companion.HwndSource.Handle;
-            if (!NativeMethods.GetWindowRect(petHandle, out var petBounds)) return false;
-            var pet = new Rect(petBounds.Left, petBounds.Top, petBounds.Width, petBounds.Height);
-            var info = new NativeMethods.MONITORINFO { cbSize = (uint)Marshal.SizeOf<NativeMethods.MONITORINFO>() };
-            if (!NativeMethods.GetMonitorInfo(NativeMethods.MonitorFromWindow(petHandle, NativeMethods.MONITOR_DEFAULTTONEAREST), ref info)) return false;
-            var work = new Rect(info.rcWork.Left, info.rcWork.Top, info.rcWork.Width, info.rcWork.Height);
             Rect? bubble = _statusBubble is { IsVisible: true } ? ScreenRect(_statusBubble) : null;
-            DpiScale dpi = VisualTreeHelper.GetDpi(_companion);
+            DpiScale dpi = layout.Dpi;
+            double elevation = _elevation * dpi.DpiScaleY;
             if (_collapsed)
             {
-                Rect? dock = UsageDockLayout.FindSwitch(pet, work,
-                    new System.Windows.Size(_dock.Width * dpi.DpiScaleX, _dock.Height * dpi.DpiScaleY), bubble);
+                Rect? dock = UsageDockLayout.FindSwitch(layout.Canvas, layout.WorkArea,
+                    new System.Windows.Size(_dock.Width * dpi.DpiScaleX, _dock.Height * dpi.DpiScaleY), bubble,
+                    elevation, layout.FootAnchor);
                 if (dock is not { } chosen) return false;
                 IntPtr dockHandle = new WindowInteropHelper(_dock).EnsureHandle();
                 NativeMethods.SetWindowPos(dockHandle, IntPtr.Zero, (int)Math.Round(chosen.Left), (int)Math.Round(chosen.Top),
@@ -525,8 +554,8 @@ public sealed class CodexUsageBadgeWindow : Window, IDisposable
             }
             else
             {
-                Rect? card = UsageDockLayout.FindPopover(pet, work, Rect.Empty,
-                    new System.Windows.Size(Width * dpi.DpiScaleX, Height * dpi.DpiScaleY), bubble);
+                Rect? card = UsageDockLayout.FindPopover(layout.Canvas, layout.WorkArea, Rect.Empty,
+                    new System.Windows.Size(Width * dpi.DpiScaleX, Height * dpi.DpiScaleY), bubble, elevation);
                 if (card is not { } placed) return false;
                 IntPtr cardHandle = new WindowInteropHelper(this).EnsureHandle();
                 NativeMethods.SetWindowPos(cardHandle, IntPtr.Zero, (int)Math.Round(placed.Left), (int)Math.Round(placed.Top),
@@ -554,6 +583,7 @@ public sealed class CodexUsageBadgeWindow : Window, IDisposable
 
     public void Dispose()
     {
+        StopObservingStatusBubble();
         _freshnessTimer.Stop();
         _freshnessTimer.Tick -= OnFreshnessTimer;
         _dock.ToggleRequested -= OnDockToggle;

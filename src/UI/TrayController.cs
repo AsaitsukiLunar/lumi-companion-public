@@ -21,6 +21,7 @@ public sealed class TrayController : IDisposable
 {
     private readonly Forms.NotifyIcon _notifyIcon;
     private readonly Forms.ContextMenuStrip _menu;
+    private readonly Forms.ToolStripMenuItem _versionItem;
     private readonly Forms.ToolStripMenuItem _pauseItem;
     private readonly Forms.ToolStripMenuItem _clickThroughItem;
     private readonly Forms.ToolStripMenuItem _startupItem;
@@ -35,7 +36,9 @@ public sealed class TrayController : IDisposable
     {
         _icon = CreateIcon(iconFrame);
         _menu = new Forms.ContextMenuStrip();
-        _menu.Items.Add(new Forms.ToolStripMenuItem("Lumi 独立桌宠 v" + AppIdentity.Version) { Enabled = false });
+        _versionItem = new Forms.ToolStripMenuItem { Enabled = false };
+        SetAvailableUpdate(null);
+        _menu.Items.Add(_versionItem);
         _menu.Items.Add(new Forms.ToolStripSeparator());
         _menu.Items.Add(CreateItem("显示 / 隐藏", (_, _) => ToggleVisibilityRequested?.Invoke(this, EventArgs.Empty)));
         _menu.Items.Add(CreateItem("互动：招手", (_, _) => InteractionRequested?.Invoke(this, EventArgs.Empty)));
@@ -72,7 +75,7 @@ public sealed class TrayController : IDisposable
         _notifyIcon = new Forms.NotifyIcon
         {
             Icon = _icon,
-            Text = "Lumi 独立桌宠 · 离线",
+            Text = $"Lumi v{AppIdentity.Version}",
             ContextMenuStrip = _menu,
             Visible = true
         };
@@ -107,8 +110,13 @@ public sealed class TrayController : IDisposable
         }
         else if (_lastUsageSnapshot is { } snapshot) UpdateCodexUsage(snapshot);
         _notifyIcon.Text = settings.SensorsPaused
-            ? "Lumi 独立桌宠 · 感知已暂停"
-            : "Lumi 独立桌宠 · 离线感知中";
+            ? $"Lumi v{AppIdentity.Version} · 感知已暂停"
+            : $"Lumi v{AppIdentity.Version} · 本机感知中";
+    }
+
+    internal void SetAvailableUpdate(string? version)
+    {
+        _versionItem.Text = $"Lumi v{AppIdentity.Version}" + (version is null ? "" : $" · 有新版 v{version}");
     }
 
     public void UpdateCodexUsage(CodexUsageSnapshot snapshot)

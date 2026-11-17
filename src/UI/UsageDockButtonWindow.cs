@@ -1,5 +1,5 @@
-// Version: 0.3.5-preview; Generated/Updated/Coverage: 2026-10-30 (Asia/Shanghai)
-// Source: RAW | user fixed floor switch request; LOCAL-WORK | Codex / Windows / usage_tabs.
+// Version: 0.3.19-preview; Generated: 2026-10-30; Updated/Coverage: 2026-11-16 (Asia/Shanghai)
+// Source: RAW | user compact usage and panel sizing requests; LOCAL-WORK | Codex Desktop / Windows.
 using System.Windows;
 using System.Windows.Interop;
 using System.Windows.Media;
@@ -11,6 +11,9 @@ namespace LumiCompanion.UI;
 
 internal sealed class UsageDockButtonWindow : Window, IDisposable
 {
+    private const double DefaultWidth = 144;
+    private const double DefaultHeight = 38;
+    private readonly ScaleTransform _layoutScale = new(1, 1);
     private readonly Controls.Button _button;
     private readonly Controls.TextBlock _provider;
     private readonly Controls.TextBlock _summary;
@@ -22,7 +25,7 @@ internal sealed class UsageDockButtonWindow : Window, IDisposable
     {
         Owner = companion;
         Title = "Lumi · 紧凑用量";
-        Width = 144; Height = 38;
+        Width = DefaultWidth; Height = DefaultHeight;
         WindowStyle = WindowStyle.None; ResizeMode = ResizeMode.NoResize;
         AllowsTransparency = true; Background = Brushes.Transparent;
         ShowActivated = false; ShowInTaskbar = false; Topmost = companion.Topmost;
@@ -52,7 +55,7 @@ internal sealed class UsageDockButtonWindow : Window, IDisposable
         };
         close.Click += (_, _) => HideRequested?.Invoke();
         Controls.Grid.SetColumn(close, 2); grid.Children.Add(close);
-        Content = new Controls.Border { Child = grid, CornerRadius = new CornerRadius(16),
+        Content = new Controls.Border { Child = grid, CornerRadius = new CornerRadius(16), LayoutTransform = _layoutScale,
             Background = UsageControlStyle.Surface, BorderBrush = UsageControlStyle.Edge, BorderThickness = new Thickness(1) };
         SourceInitialized += (_, _) =>
         {
@@ -67,6 +70,13 @@ internal sealed class UsageDockButtonWindow : Window, IDisposable
     internal void SetExpanded(bool expanded)
     {
         _button.ToolTip = "放大用量卡片";
+    }
+
+    internal void SetLayoutScale(double scale)
+    {
+        _layoutScale.ScaleX = _layoutScale.ScaleY = scale;
+        Width = DefaultWidth * scale;
+        Height = DefaultHeight * scale;
     }
 
     internal void SetSummary(string provider, string summary, object? detail)

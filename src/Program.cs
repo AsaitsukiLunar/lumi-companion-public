@@ -77,6 +77,7 @@ public static class Program
         if (args.Contains("--integration-self-test"))
         {
             IntegrationSelfTest.Run();
+            GitHubUpdateSelfTest.Run();
             CodexUsageSelfTest.Run();
             LocalTaskSourceSelfTest.Run();
             LocalWorkBuddyTaskSourceSelfTest.Run();

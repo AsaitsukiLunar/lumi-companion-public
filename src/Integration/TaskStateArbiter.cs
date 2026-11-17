@@ -1,5 +1,5 @@
-// Version: 0.3.14-preview | Generated: 2026-10-08 | Updated/Coverage: 2026-11-11 (Asia/Shanghai)
-// Source: RAW | user current-batch conversation counts and shared acknowledgement rules; LOCAL-WORK | Codex Desktop / Lumi / Codex
+// Version: 0.3.21-preview | Generated: 2026-10-08 | Updated/Coverage: 2026-11-17 (Asia/Shanghai)
+// Source: RAW | user current-batch counts, acknowledgement rules and agent separation; LOCAL-WORK | Codex Desktop / Lumi / Codex
 namespace LumiCompanion.Integration;
 
 public enum AgentTaskState { Unknown, Idle, Completed, Review, Running, Failed, Waiting }
@@ -11,6 +11,7 @@ public sealed record AggregateTaskState(AgentTaskState State, int RunningCount, 
     // Counts do not change animation arbitration. The behavior layer supplies the bounded current batch.
     public ConversationProgress? Progress { get; init; }
     public ConversationProgress? WorkBuddyProgress { get; init; }
+    public IReadOnlyDictionary<string, ConversationProgress>? ProgressBySource { get; init; }
 }
 
 public sealed record ConversationProgress(int TotalCount, int RunningCount, int ReviewCount,

@@ -1,15 +1,15 @@
 /*
 Traceability metadata
-Version: 0.2.0
+Version: 0.3.19-preview
 Generated: 2026-07-25 (Asia/Shanghai)
-Last updated: 2026-11-10
-Content coverage through: 2026-11-10
-Source type: LOCAL-WORK; RAW (user quota reset time display request)
+Last updated: 2026-11-16
+Content coverage through: 2026-11-16
+Source type: LOCAL-WORK; RAW (user quota reset time and floating window layout requests)
 Source: Codex Desktop / workspace new-chat / current Lumi independent companion task / Codex
 */
 
-using LumiCompanion.Infrastructure;
 using LumiCompanion.Models;
+using LumiCompanion.Infrastructure;
 using Wpf = System.Windows;
 using Controls = System.Windows.Controls;
 using Media = System.Windows.Media;
@@ -22,6 +22,12 @@ public sealed class SettingsWindow : Wpf.Window
     private readonly Controls.TextBlock _widthValue;
     private readonly Controls.Slider _retention;
     private readonly Controls.TextBlock _retentionValue;
+    private readonly Controls.TextBlock _updateStatus;
+    private readonly Controls.Button _checkUpdates;
+    private readonly Controls.Button _openReleasePage;
+    private readonly (Controls.Slider Scale, Controls.Slider Elevation) _taskBubbleLayout;
+    private readonly (Controls.Slider Scale, Controls.Slider Elevation) _codexUsageLayout;
+    private readonly (Controls.Slider Scale, Controls.Slider Elevation) _comfyUiLayout;
     private readonly Dictionary<string, Controls.CheckBox> _checks = new();
 
     public SettingsWindow(LumiSettings settings, string dataDirectory)
@@ -48,7 +54,34 @@ public sealed class SettingsWindow : Wpf.Window
         });
         content.Children.Add(new Controls.TextBlock
         {
-            Text = "默认离线，只读取已授权的本机事件，不记录按键内容，也不主动控制电脑。",
+            Text = $"当前版本 v{AppIdentity.Version}",
+            FontSize = 13,
+            FontWeight = Wpf.FontWeights.SemiBold,
+            Margin = new Wpf.Thickness(0, 7, 0, 2)
+        });
+        _updateStatus = new Controls.TextBlock
+        {
+            Text = "等待读取 GitHub 发布",
+            TextWrapping = Wpf.TextWrapping.Wrap,
+            Foreground = Media.Brushes.DimGray
+        };
+        content.Children.Add(_updateStatus);
+        _checkUpdates = SecondaryButton("检查更新");
+        _checkUpdates.Click += (_, _) => UpdateCheckRequested?.Invoke(this, EventArgs.Empty);
+        _openReleasePage = SecondaryButton("查看发布页");
+        _openReleasePage.IsEnabled = false;
+        _openReleasePage.Click += (_, _) => ReleasePageRequested?.Invoke(this, EventArgs.Empty);
+        var updateActions = new Controls.StackPanel
+        {
+            Orientation = Controls.Orientation.Horizontal,
+            Margin = new Wpf.Thickness(0, 5, 0, 0)
+        };
+        updateActions.Children.Add(_checkUpdates);
+        updateActions.Children.Add(_openReleasePage);
+        content.Children.Add(updateActions);
+        content.Children.Add(new Controls.TextBlock
+        {
+            Text = "桌宠感知读取本机事件，不记录按键内容。版本检查读取 GitHub 的公开发布信息。",
             Margin = new Wpf.Thickness(0, 5, 0, 16),
             Foreground = Media.Brushes.DimGray,
             TextWrapping = Wpf.TextWrapping.Wrap
@@ -59,7 +92,7 @@ public sealed class SettingsWindow : Wpf.Window
         _width.ValueChanged += (_, _) => _widthValue.Text = Math.Round(_width.Value) + " px";
         var startup = Check("startWithWindows", "随 Windows 启动",
             StartupManager.IsSupported && settings.StartWithWindows,
-            StartupManager.IsSupported ? "仅使用当前用户启动项。" : "运行文件夹版不设置 Windows 启动项。");
+            StartupManager.IsSupported ? "仅使用当前用户启动项。" : "便携包自行保存在文件夹中。");
         startup.IsEnabled = StartupManager.IsSupported;
         content.Children.Add(Section("外观与系统",
             LabeledSlider("宠物宽度（96–320 px）", _width, _widthValue),
@@ -67,6 +100,11 @@ public sealed class SettingsWindow : Wpf.Window
             Check("clickThrough", "鼠标穿透（锁定）", settings.ClickThrough, "开启后通过托盘小图标重新配置。"),
             startup,
             Check("hideInFullscreen", "全屏时隐藏", settings.HideInFullscreen, "检测到全屏应用时暂时隐藏。")));
+
+        _taskBubbleLayout = CreatePanelLayoutSliders(settings.TaskBubbleScalePercent, settings.TaskBubbleElevation);
+        _codexUsageLayout = CreatePanelLayoutSliders(settings.CodexUsageScalePercent, settings.CodexUsageElevation);
+        _comfyUiLayout = CreatePanelLayoutSliders(settings.ComfyUiScalePercent, settings.ComfyUiElevation);
+        content.Children.Add(BuildPanelLayoutSection());
 
         content.Children.Add(Section("隐私与事件感知",
             Check("sensorsPaused", "暂停所有事件感知", settings.SensorsPaused, "动画仍可运行。"),
@@ -151,6 +189,89 @@ public sealed class SettingsWindow : Wpf.Window
     public LumiSettings ResultSettings { get; private set; }
     public event EventHandler? ClearDataRequested;
     public event EventHandler? OpenDataDirectoryRequested;
+    internal event EventHandler? UpdateCheckRequested;
+    internal event EventHandler? ReleasePageRequested;
+
+    internal void SetUpdateStatus(string status, bool checking, bool canOpenRelease)
+    {
+        _updateStatus.Text = status;
+        _checkUpdates.IsEnabled = !checking;
+        _openReleasePage.IsEnabled = canOpenRelease;
+    }
+
+    private Wpf.UIElement BuildPanelLayoutSection()
+    {
+        var rows = new[]
+        {
+            (Label: "对话状态气泡", Layout: _taskBubbleLayout),
+            (Label: "Codex 用量卡", Layout: _codexUsageLayout),
+            (Label: "ComfyUI 监测窗", Layout: _comfyUiLayout)
+        };
+        var grid = new Controls.Grid { Margin = new Wpf.Thickness(2, 0, 2, 6) };
+        grid.ColumnDefinitions.Add(new Controls.ColumnDefinition { Width = Wpf.GridLength.Auto });
+        grid.ColumnDefinitions.Add(new Controls.ColumnDefinition());
+        grid.ColumnDefinitions.Add(new Controls.ColumnDefinition());
+        grid.RowDefinitions.Add(new Controls.RowDefinition { Height = Wpf.GridLength.Auto });
+        Add(new Controls.TextBlock { Text = "大小", FontWeight = Wpf.FontWeights.SemiBold }, 1, 0);
+        Add(new Controls.TextBlock { Text = "悬浮高度", FontWeight = Wpf.FontWeights.SemiBold }, 2, 0);
+        foreach (var (label, layout) in rows)
+        {
+            int row = grid.RowDefinitions.Count;
+            grid.RowDefinitions.Add(new Controls.RowDefinition { Height = Wpf.GridLength.Auto });
+            Add(new Controls.TextBlock
+            {
+                Text = label,
+                Margin = new Wpf.Thickness(0, 4, 12, 0),
+                VerticalAlignment = Wpf.VerticalAlignment.Center
+            }, 0, row);
+            Add(PanelSlider(layout.Scale, label + "大小", "0'%'"), 1, row);
+            Add(PanelSlider(layout.Elevation, label + "悬浮高度", "+0' px';-0' px';0' px'"), 2, row);
+        }
+
+        var hint = new Controls.TextBlock
+        {
+            Text = "高度相对桌宠调整，正值向上。贴近屏幕边缘时会自动避让。ComfyUI 分离时可拖动标题。",
+            Foreground = Media.Brushes.DimGray,
+            TextWrapping = Wpf.TextWrapping.Wrap,
+            Margin = new Wpf.Thickness(2, 0, 2, 9)
+        };
+        Controls.Button reset = SecondaryButton("恢复浮窗默认值");
+        reset.HorizontalAlignment = Wpf.HorizontalAlignment.Left;
+        reset.Click += (_, _) =>
+        {
+            foreach (var (_, layout) in rows)
+            {
+                layout.Scale.Value = 100;
+                layout.Elevation.Value = 0;
+            }
+        };
+        return Section("浮窗大小与高度", grid, hint, reset);
+
+        void Add(Wpf.UIElement element, int column, int row)
+        {
+            Controls.Grid.SetColumn(element, column);
+            Controls.Grid.SetRow(element, row);
+            grid.Children.Add(element);
+        }
+    }
+
+    private static (Controls.Slider Scale, Controls.Slider Elevation) CreatePanelLayoutSliders(int scale, int elevation) =>
+        (CreateSlider(LumiSettings.PanelScaleMinimumPercent, LumiSettings.PanelScaleMaximumPercent, scale, 1),
+            CreateSlider(-LumiSettings.PanelElevationLimit, LumiSettings.PanelElevationLimit, elevation, 1));
+
+    private static Controls.DockPanel PanelSlider(Controls.Slider slider, string accessibleName, string numberFormat)
+    {
+        Wpf.Automation.AutomationProperties.SetName(slider, accessibleName);
+        var value = ValueLabel();
+        value.MinWidth = 46;
+        value.Text = slider.Value.ToString(numberFormat);
+        slider.ValueChanged += (_, _) => value.Text = slider.Value.ToString(numberFormat);
+        var panel = new Controls.DockPanel { Margin = new Wpf.Thickness(0, 0, 12, 0) };
+        Controls.DockPanel.SetDock(value, Controls.Dock.Right);
+        panel.Children.Add(value);
+        panel.Children.Add(slider);
+        return panel;
+    }
 
     private Wpf.UIElement BuildFooter()
     {
@@ -200,6 +321,12 @@ public sealed class SettingsWindow : Wpf.Window
         value.MouseLook = IsChecked("mouseLook");
         value.ShowCodexUsage = IsChecked("showCodexUsage");
         value.ShowCodexUsageResetTimes = IsChecked("showCodexUsageResetTimes");
+        value.TaskBubbleScalePercent = (int)_taskBubbleLayout.Scale.Value;
+        value.TaskBubbleElevation = (int)_taskBubbleLayout.Elevation.Value;
+        value.CodexUsageScalePercent = (int)_codexUsageLayout.Scale.Value;
+        value.CodexUsageElevation = (int)_codexUsageLayout.Elevation.Value;
+        value.ComfyUiScalePercent = (int)_comfyUiLayout.Scale.Value;
+        value.ComfyUiElevation = (int)_comfyUiLayout.Elevation.Value;
         value.SaveLocalStats = IsChecked("saveStats");
         value.SaveEventHistory = IsChecked("saveHistory");
         value.StoreWindowTitles = value.SaveEventHistory && value.ReadWindowTitles && IsChecked("storeTitles");

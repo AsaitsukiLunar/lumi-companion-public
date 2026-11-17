@@ -1,10 +1,10 @@
 /*
 Traceability metadata
-Version: 0.3.14-preview
+Version: 0.3.22-beta.1
 Generated: 2026-07-25 (Asia/Shanghai)
-Last updated / content coverage through: 2026-11-11 (Asia/Shanghai)
-Source type: LOCAL-WORK, LOCAL-AGENT
-Original sources: Lumi host baseline; WorkBuddy state bridge handoff V1.0
+Last updated / content coverage through: 2026-11-17 (Asia/Shanghai)
+Source type: RAW (user feedback), LOCAL-WORK, LOCAL-AGENT
+Original sources: Lumi host, WorkBuddy state bridge, and GitHub release checks
 Organizing node: Windows / Codex Desktop / Lumi independent companion / Codex
 */
 
@@ -32,6 +32,13 @@ public sealed class LumiApplicationHost : IDisposable
     private readonly DispatcherTimer _persistenceTimer;
     private readonly DispatcherTimer _codexUsageTimer;
     private readonly DispatcherTimer _taskStatusTimer;
+    private readonly DispatcherTimer _updateTimer;
+    private readonly GitHubUpdateService _updates = new();
+    private readonly CancellationTokenSource _updateCancellation = new();
+    private SettingsWindow? _settingsDialog;
+    private GitHubUpdateStatus? _updateStatus;
+    private DateTimeOffset? _updateCheckedAt;
+    private bool _checkingUpdates;
     private readonly LocalCodexTaskSource _taskSource = new();
     private readonly CompletionHistoryService _completionHistory;
     private readonly LocalWorkBuddyTaskSource _workBuddyTaskSource = new();
@@ -107,6 +114,8 @@ public sealed class LumiApplicationHost : IDisposable
             Interval = TimeSpan.FromSeconds(2)
         };
         _taskStatusTimer.Tick += OnTaskStatusTimerTick;
+        _updateTimer = new DispatcherTimer(DispatcherPriority.Background) { Interval = TimeSpan.FromHours(12) };
+        _updateTimer.Tick += OnUpdateTimerTick;
     }
 
     public void Start()
@@ -131,12 +140,11 @@ public sealed class LumiApplicationHost : IDisposable
         _codexUsageBadge.ModuleVisibilityRequested += OnUsageModuleVisibilityRequested;
         _codexUsageBadge.SetSnapshot(CodexUsageSnapshot.Loading());
         _codexUsageBadge.ApplySettings(_settings);
-        _taskStatusBubble = new TaskStatusBubbleWindow(_window, _codexUsageBadge);
+        _taskStatusBubble = new TaskStatusBubbleWindow(_window);
+        _taskStatusBubble.ApplySettings(_settings);
         _codexUsageBadge.SetStatusBubble(_taskStatusBubble);
-        _comfyUiStatusWindow = new ComfyUiStatusWindow(_window, _state.ComfyUiPanel, _codexUsageBadge)
-        {
-            Topmost = _settings.AlwaysOnTop
-        };
+        _comfyUiStatusWindow = new ComfyUiStatusWindow(_window, _state.ComfyUiPanel, _codexUsageBadge, _taskStatusBubble);
+        _comfyUiStatusWindow.ApplySettings(_settings);
         _comfyUiStatusWindow.PlacementChanged += OnComfyUiPanelPlacementChanged;
         _comfyUiStatusWindow.SyncVisibility();
 
@@ -173,6 +181,8 @@ public sealed class LumiApplicationHost : IDisposable
         _audioTimer.Start();
         _persistenceTimer.Start();
         _taskStatusTimer.Start();
+        _updateTimer.Start();
+        _ = CheckForUpdatesAsync();
         _ = RefreshTaskStatusAsync();
         ConfigureCodexUsageLifecycle(refreshImmediately: true);
         _behavior.HandleDirectInteraction(false);
@@ -379,6 +389,53 @@ public sealed class LumiApplicationHost : IDisposable
     }
 
     private void OnTaskStatusTimerTick(object? sender, EventArgs e) => _ = RefreshTaskStatusAsync();
+
+    private void OnUpdateTimerTick(object? sender, EventArgs e) => _ = CheckForUpdatesAsync();
+
+    private async Task CheckForUpdatesAsync()
+    {
+        if (_disposed || _checkingUpdates) return;
+        _checkingUpdates = true;
+        RefreshUpdateDisplay();
+        CancellationToken token = _updateCancellation.Token;
+        try
+        {
+            _updateStatus = await _updates.CheckAsync(AppIdentity.Version, token);
+            _updateCheckedAt = DateTimeOffset.Now;
+        }
+        catch (OperationCanceledException) when (token.IsCancellationRequested) { }
+        finally
+        {
+            _checkingUpdates = false;
+            if (!_disposed) RefreshUpdateDisplay();
+        }
+    }
+
+    private void RefreshUpdateDisplay()
+    {
+        string text = _checkingUpdates ? "正在检查 GitHub 发布…" : _updateStatus switch
+        {
+            { Error: { } error } => error,
+            { UpdateAvailable: true, LatestVersion: { } latest } => $"GitHub 有新版 v{latest}",
+            { LatestVersion: { } latest } => $"GitHub 最新发布 v{latest}，当前无需更新",
+            _ => "等待读取 GitHub 发布"
+        };
+        if (!_checkingUpdates && _updateCheckedAt is { } checkedAt) text += $" · {checkedAt:MM-dd HH:mm} 检查";
+        _settingsDialog?.SetUpdateStatus(text, _checkingUpdates, _updateStatus?.ReleasePage is not null);
+        string? availableVersion = _updateStatus is { UpdateAvailable: true } status ? status.LatestVersion : null;
+        _window?.SetAvailableUpdate(availableVersion);
+        _tray?.SetAvailableUpdate(availableVersion);
+    }
+
+    private void OpenReleasePage()
+    {
+        if (_updateStatus?.ReleasePage is not { } page) return;
+        try { Process.Start(new ProcessStartInfo(page.AbsoluteUri) { UseShellExecute = true }); }
+        catch (Exception ex) when (ex is System.ComponentModel.Win32Exception or InvalidOperationException)
+        {
+            _settingsDialog?.SetUpdateStatus("无法打开发布页，请检查默认浏览器。", _checkingUpdates, true);
+        }
+    }
 
     private async Task RefreshTaskStatusAsync()
     {
@@ -729,10 +786,15 @@ public sealed class LumiApplicationHost : IDisposable
             }
         };
 
-        if (dialog.ShowDialog() == true)
+        dialog.UpdateCheckRequested += (_, _) => _ = CheckForUpdatesAsync();
+        dialog.ReleasePageRequested += (_, _) => OpenReleasePage();
+        _settingsDialog = dialog;
+        RefreshUpdateDisplay();
+        try
         {
-            ApplySettings(dialog.ResultSettings, true);
+            if (dialog.ShowDialog() == true) ApplySettings(dialog.ResultSettings, true);
         }
+        finally { _settingsDialog = null; }
     }
 
     private void ApplySettings(LumiSettings updated, bool updateStartup)
@@ -757,7 +819,8 @@ public sealed class LumiApplicationHost : IDisposable
         _completionHistory.SetEnabled(_settings.SaveLocalStats);
         _workBuddyCompletionHistory.SetEnabled(_settings.SaveLocalStats);
         _window?.ApplySettings(_settings);
-        if (_comfyUiStatusWindow is not null) _comfyUiStatusWindow.Topmost = _settings.AlwaysOnTop;
+        _taskStatusBubble?.ApplySettings(_settings);
+        _comfyUiStatusWindow?.ApplySettings(_settings);
         _activityMonitor?.UpdateSettings(_settings);
         UpdateSensorLifecycle();
         _behavior?.UpdateSettings(_settings);
@@ -825,6 +888,10 @@ public sealed class LumiApplicationHost : IDisposable
         _codexUsageTimer.Stop();
         _taskStatusTimer.Stop();
         _taskStatusTimer.Tick -= OnTaskStatusTimerTick;
+        _updateTimer.Stop();
+        _updateTimer.Tick -= OnUpdateTimerTick;
+        _updateCancellation.Cancel();
+        _updateCancellation.Dispose();
         _taskStatusCancellation.Cancel();
         _taskStatusCancellation.Dispose();
         _behaviorTimer.Tick -= OnBehaviorTick;

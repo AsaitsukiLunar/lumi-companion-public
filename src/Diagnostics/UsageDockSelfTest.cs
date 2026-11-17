@@ -1,5 +1,5 @@
-// Version: 0.3.14-preview; Generated: 2026-10-30; Updated/Coverage: 2026-11-11 (Asia/Shanghai)
-// Source: RAW | user floor-switch, ComfyUI docking, perimeter progress and adaptive placement requests; LOCAL-WORK | isolated WPF and native tests.
+// Version: 0.3.19-preview; Generated: 2026-10-30; Updated/Coverage: 2026-11-16 (Asia/Shanghai)
+// Source: RAW | user card layout, resizing and stable animation anchor requests; LOCAL-WORK | isolated WPF and native tests.
 using System.Diagnostics;
 using System.Text.Json;
 using System.Windows;
@@ -61,10 +61,34 @@ public static class UsageDockSelfTest
             Check(UsageDockLayout.FindPopover(new Rect(70, 70, 192, 208), narrowWork, Rect.Empty, cardSize, null) is null,
                 "no safe side placement reports unavailable instead of moving full card below feet");
 
+            var tallCard = new System.Windows.Size(224, 214);
+            var cornerPet = new Rect(work.Right - 195, work.Bottom - 211, 192, 208);
+            Rect cornerCard = UsageDockLayout.FindPopover(cornerPet, work, Rect.Empty, tallCard, null)!.Value;
+            var cornerBubble = new Rect(cornerCard.Right - 4, cornerCard.Top - 30, 178, 38);
+            Rect? movedCard = UsageDockLayout.FindPopover(cornerPet, work, Rect.Empty, tallCard, cornerBubble);
+            Check(movedCard is { } cardFit && work.Contains(cardFit) && cardFit.Right <= cornerPet.Left &&
+                  !cardFit.IntersectsWith(cornerBubble),
+                "expanded usage stays visible in the bottom-right corner when the task bubble clips its only side slot");
+            Rect cornerComfy = UsageDockLayout.FindComfyUiPanel(cornerPet, work,
+                new System.Windows.Size(286, 190), movedCard, cornerBubble)!.Value;
+            Check(work.Contains(cornerComfy) && !cornerComfy.IntersectsWith(cornerPet) &&
+                  !cornerComfy.IntersectsWith(movedCard!.Value) && !cornerComfy.IntersectsWith(cornerBubble),
+                "detailed ComfyUI stays clear of full usage and the task bubble in the bottom-right corner");
+
+            var topWork = new Rect(0, 0, 1920, 1040);
+            var topPet = new Rect(904, 0, 192, 208);
+            var topQuota = new Rect(672, 0, 224, 214);
+            var sideBubble = new Rect(1064, 4, 178, 38);
+            Rect? topComfy = UsageDockLayout.FindComfyUiPanel(topPet, topWork, new System.Windows.Size(286, 174),
+                topQuota, sideBubble);
+            Check(topComfy is { } clear && topWork.Contains(clear) && clear.Left > topPet.Right &&
+                  !clear.IntersectsWith(sideBubble) && !clear.IntersectsWith(topQuota),
+                "attached ComfyUI avoids the task bubble and quota instead of placing its header underneath");
+
             var comfySize = new System.Windows.Size(286, 170);
             var rightEdgePet = new Rect(-202, 120, 192, 208);
             Rect leftSideUsage = UsageDockLayout.FindPopover(rightEdgePet, work, Rect.Empty, cardSize, null)!.Value;
-            Rect adaptiveComfy = UsageDockLayout.FindComfyUiPanel(rightEdgePet, work, comfySize, leftSideUsage);
+            Rect adaptiveComfy = UsageDockLayout.FindComfyUiPanel(rightEdgePet, work, comfySize, leftSideUsage)!.Value;
             Check(work.Contains(adaptiveComfy) && !adaptiveComfy.IntersectsWith(rightEdgePet) &&
                   !adaptiveComfy.IntersectsWith(leftSideUsage),
                 "when right-side space is unavailable, ComfyUI finds another safe place without shifting Lumi");
@@ -73,7 +97,7 @@ public static class UsageDockSelfTest
                 UsageDockLayout.FitPetBesideComfyUi(centered, work, comfySize) == centered.Left,
                 "right-side ComfyUI reserves only the horizontal space missing at the right screen edge");
             rightEdgePet.X = fittedLeft;
-            Rect rightEdgeComfy = UsageDockLayout.FindComfyUiPanel(rightEdgePet, work, comfySize, null);
+            Rect rightEdgeComfy = UsageDockLayout.FindComfyUiPanel(rightEdgePet, work, comfySize, null)!.Value;
             Check(work.Contains(rightEdgeComfy) && rightEdgeComfy.Left >= rightEdgePet.Right,
                 "ComfyUI stays on the right after fitting a pet near the right edge of a negative-coordinate monitor");
             var leftEdgePet = new Rect(-895, 120, 192, 208);
@@ -84,7 +108,7 @@ public static class UsageDockSelfTest
                     new Rect(leftEdgePet.Left, leftEdgePet.Bottom + 1, leftEdgePet.Width, switchSize.Height + 16))!.Value
             })
             {
-                Rect placed = UsageDockLayout.FindComfyUiPanel(leftEdgePet, work, comfySize, rightSideUsage);
+                Rect placed = UsageDockLayout.FindComfyUiPanel(leftEdgePet, work, comfySize, rightSideUsage)!.Value;
                 Check(rightSideUsage.Left >= leftEdgePet.Right && work.Contains(placed) &&
                       placed.Left >= leftEdgePet.Right && !placed.IntersectsWith(rightSideUsage),
                     "right-side ComfyUI avoids the Codex usage window when it also has to dock on the right");
@@ -111,7 +135,7 @@ public static class UsageDockSelfTest
             badge.SetSnapshot(new CodexUsageSnapshot(new CodexUsageWindow(300, 35, previewAt.AddHours(1)),
                 new CodexUsageWindow(10080, 12, previewAt.AddDays(2)), previewAt, "合成测试数据") { SourceLabel = "合成快照" });
             badge.ApplySettings(new LumiSettings { ShowCodexUsage = true });
-            bubble = new TaskStatusBubbleWindow(pet, badge);
+            bubble = new TaskStatusBubbleWindow(pet);
             badge.SetStatusBubble(bubble);
             bubble.SetTaskState(new AggregateTaskState(AgentTaskState.Running, 1, 0, 1, false));
             Pump(220);
@@ -270,7 +294,7 @@ public static class UsageDockSelfTest
             Pump(220);
             Rect beforeComfyReturn = Bounds(pet);
             comfy = new ComfyUiStatusWindow(pet, new ComfyUiPanelPlacement(Docked: false,
-                Left: actualWork.Left + 12, Top: actualWork.Top + 12, ShowNodeSteps: false), badge);
+                Left: actualWork.Left + 12, Top: actualWork.Top + 12, ShowNodeSteps: false), badge, bubble);
             comfy.SyncVisibility();
             Pump(220);
             var returnButton = Descendants<Controls.Button>((DependencyObject)comfy.Content)
@@ -311,6 +335,110 @@ public static class UsageDockSelfTest
             Check(resumedPet.Left == availableLeft && comfy.IsVisible && actualWork.Contains(resumedComfy) &&
                   resumedComfy.Left >= resumedPet.Right && badge.IsVisible && !resumedComfy.IntersectsWith(Bounds(badge)),
                 "the attached ComfyUI card returns to the right automatically when there is room again");
+
+            badge.ApplySettings(new LumiSettings { ShowCodexUsage = true, ShowCodexUsageResetTimes = true });
+            Descendants<Controls.Button>((DependencyObject)comfy.Content)
+                .Single(button => Equals(button.Content, "模式：队列统计"))
+                .RaiseEvent(new RoutedEventArgs(Controls.Button.ClickEvent));
+            const string cornerPrompt = "corner-fixture";
+            var cornerStatus = new ComfyUiStatusSnapshot(DateTimeOffset.Now, 0, 1, [cornerPrompt], 9, 0, 9, "合成角落测试")
+            {
+                RunningEta = new(TimeSpan.FromSeconds(100), TimeSpan.FromSeconds(180))
+            };
+            comfy.ApplyStatus(cornerStatus, new ComfyUiMonitorRead(null, new ComfyUiNodeProgress(cornerPrompt, "349", 14, 15)));
+            bubble.SetTaskState(new AggregateTaskState(AgentTaskState.Running, 2, 0, 2, false));
+            double cornerRight = actualWork.Right - resumedPet.Width - 3;
+            double cornerBottom = actualWork.Bottom - resumedPet.Height - 3;
+            foreach (Point corner in new[] { new Point(actualWork.Left + 3, actualWork.Top + 3),
+                new Point(cornerRight, actualWork.Top + 3), new Point(actualWork.Left + 3, cornerBottom),
+                new Point(cornerRight, cornerBottom) })
+            {
+                NativeMethods.SetWindowPos(pet.HwndSource.Handle, IntPtr.Zero, (int)corner.X, (int)corner.Y, 0, 0,
+                    NativeMethods.SWP_NOSIZE | NativeMethods.SWP_NOZORDER | NativeMethods.SWP_NOACTIVATE);
+                Pump(220);
+                Rect usageAtCorner = Bounds(badge), comfyAtCorner = Bounds(comfy), bubbleAtCorner = Bounds(bubble);
+                Check(badge.IsExpanded && badge.IsVisible && badge.Height == 214 && comfy.IsVisible && bubble.IsVisible &&
+                      actualWork.Contains(usageAtCorner) && actualWork.Contains(comfyAtCorner) && actualWork.Contains(bubbleAtCorner) &&
+                      !usageAtCorner.IntersectsWith(comfyAtCorner) && !comfyAtCorner.IntersectsWith(Bounds(pet)) &&
+                      !usageAtCorner.IntersectsWith(bubbleAtCorner) && !comfyAtCorner.IntersectsWith(bubbleAtCorner),
+                    $"full usage, task bubble and detailed ComfyUI stay visible and separate at ({corner.X}, {corner.Y})");
+            }
+            badge.SetExpanded(false); Pump(220);
+            Check(badge.DockWindow.IsVisible && !Bounds(comfy).IntersectsWith(Bounds(badge.DockWindow)),
+                "compact usage stays separate from detailed ComfyUI at the bottom-right corner");
+            badge.SetExpanded(true); Pump(220);
+            Check(badge.IsVisible && !Bounds(comfy).IntersectsWith(Bounds(badge)),
+                "reopening full usage at the bottom-right corner moves ComfyUI clear");
+
+            NativeMethods.SetWindowPos(pet.HwndSource.Handle, IntPtr.Zero,
+                (int)(actualWork.Left + (actualWork.Width - resumedPet.Width) / 2),
+                (int)(actualWork.Top + (actualWork.Height - resumedPet.Height) / 2), 0, 0,
+                NativeMethods.SWP_NOSIZE | NativeMethods.SWP_NOZORDER | NativeMethods.SWP_NOACTIVATE);
+            Pump(220);
+            Rect baseBubble = Bounds(bubble), baseUsage = Bounds(badge), baseComfy = Bounds(comfy);
+            var panelSettings = new LumiSettings
+            {
+                ShowCodexUsage = true, ShowCodexUsageResetTimes = true,
+                TaskBubbleElevation = 24, CodexUsageElevation = 32, ComfyUiElevation = 40
+            };
+            ApplyPanelSettings();
+            double dpiY = VisualTreeHelper.GetDpi(pet).DpiScaleY;
+            Check(Math.Abs(baseBubble.Top - Bounds(bubble).Top - 24 * dpiY) <= 2 &&
+                  Math.Abs(baseUsage.Top - Bounds(badge).Top - 32 * dpiY) <= 2 &&
+                  Math.Abs(baseComfy.Top - Bounds(comfy).Top - 40 * dpiY) <= 2,
+                "each panel follows its own user-set elevation");
+
+            panelSettings.TaskBubbleScalePercent = 120;
+            panelSettings.CodexUsageScalePercent = 110;
+            panelSettings.ComfyUiScalePercent = 90;
+            ApplyPanelSettings();
+            Rect zoomedBubble = Bounds(bubble), zoomedUsage = Bounds(badge), zoomedComfy = Bounds(comfy);
+            Check(bubble.IsVisible && badge.IsVisible && comfy.IsVisible &&
+                  Math.Abs(zoomedBubble.Width - baseBubble.Width * 1.2) <= 2 &&
+                  Math.Abs(zoomedUsage.Width - baseUsage.Width * 1.1) <= 2 &&
+                  Math.Abs(zoomedComfy.Width - baseComfy.Width * .9) <= 2 &&
+                  !zoomedBubble.IntersectsWith(zoomedUsage) && !zoomedBubble.IntersectsWith(zoomedComfy) &&
+                  !zoomedUsage.IntersectsWith(zoomedComfy),
+                "each panel follows its own user-set scale and keeps clear of the other panels");
+            badge.SetExpanded(false); Pump(220);
+            Check(badge.DockWindow.IsVisible && Math.Abs(badge.DockWindow.Width - 144 * 1.1) <= 1,
+                "the compact usage entry uses the same display scale as the expanded card");
+            badge.SetExpanded(true); Pump(220);
+
+            Rect beforeJumpBubble = Bounds(bubble), beforeJumpUsage = Bounds(badge), beforeJumpComfy = Bounds(comfy);
+            var jumpMasks = new HashSet<SpriteHitMask>();
+            pet.SetVisual(AnimationId.Jumping, null, "合成跳跃浮窗测试", loopOverride: true);
+            bool panelsStayedStill = true;
+            for (int frame = 0; frame < 6; frame++)
+            {
+                Pump(110);
+                jumpMasks.Add(pet.CurrentHitMask!);
+                panelsStayedStill &= bubble.IsVisible && badge.IsVisible && comfy.IsVisible &&
+                    Bounds(bubble) == beforeJumpBubble && Bounds(badge) == beforeJumpUsage && Bounds(comfy) == beforeJumpComfy;
+            }
+            Check(jumpMasks.Count > 1 && panelsStayedStill,
+                "all three customized panels stay fixed across multiple visible jump frames");
+
+            Check(pet.TryGetPanelLayout(out var layoutBeforeMove), "shared companion layout is available on screen");
+            Vector movement = new(40, 24);
+            NativeMethods.SetWindowPos(pet.HwndSource.Handle, IntPtr.Zero,
+                (int)(layoutBeforeMove.Canvas.Left + movement.X), (int)(layoutBeforeMove.Canvas.Top + movement.Y), 0, 0,
+                NativeMethods.SWP_NOSIZE | NativeMethods.SWP_NOZORDER | NativeMethods.SWP_NOACTIVATE);
+            Pump(220);
+            Check(pet.TryGetPanelLayout(out var layoutAfterMove) &&
+                  layoutAfterMove.FootAnchor - layoutBeforeMove.FootAnchor == movement &&
+                  Bounds(bubble).Location - beforeJumpBubble.Location == movement &&
+                  Bounds(badge).Location - beforeJumpUsage.Location == movement &&
+                  Bounds(comfy).Location - beforeJumpComfy.Location == movement,
+                "moving the common ground anchor translates all three attached panels by the same amount");
+
+            void ApplyPanelSettings()
+            {
+                bubble.ApplySettings(panelSettings);
+                badge.ApplySettings(panelSettings);
+                comfy.ApplySettings(panelSettings);
+                Pump(280);
+            }
 
             VerifyComfyUiPerimeter(pet, directory, Check, renders);
         }
